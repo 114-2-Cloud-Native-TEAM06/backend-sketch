@@ -1,0 +1,54 @@
+services:
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+      - "5555:5555"
+    volumes:
+      - ./backend:/app        # 本機 code → container，改檔案即時生效
+      - /app/node_modules     # node_modules 不被本機蓋掉
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_secret_change_in_prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"           # 本機可用 DBeaver / psql 直連
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: imdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d imdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"           # 本機可用 RedisInsight 直連
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,61 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  username    String   @unique
+  displayName String
+  email       String   @unique
+  password    String
+  createdAt   DateTime @default(now())
+
+  // 關聯
+  memberships RoomMember[]
+  messages    Message[]
+}
+
+model Room {
+  id            String    @id @default(uuid())
+  name          String?                        // 群組才有名稱，1對1 為 null
+  isGroup       Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  lastMessageAt DateTime  @default(now())      // 每次送訊息時更新，供聊天室列表排序
+
+  // 關聯
+  members  RoomMember[]
+  messages Message[]
+
+  @@index([lastMessageAt])
+}
+
+model RoomMember {
+  userId    String
+  roomId    String
+  joinedAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  room Room @relation(fields: [roomId], references: [id])
+
+  @@id([userId, roomId])                  // 複合 PK，防止重複加入
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now())
+
+  senderId  String
+  roomId    String
+
+  sender User @relation(fields: [senderId], references: [id])
+  room   Room @relation(fields: [roomId], references: [id])
+
+  @@index([roomId, createdAt])            // 查歷史訊息的查詢會用到
+}
