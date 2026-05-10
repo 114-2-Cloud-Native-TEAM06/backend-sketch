@@ -4,8 +4,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile.dev
     ports:
-      - "3000:3000"
-      - "5555:5555"
+      - "8080:8080"   # REST
+      - "8081:8081"   # WebSocket
+      - "5555:5555"   # Prisma Studio
     volumes:
       - ./backend:/app        # 本機 code → container，改檔案即時生效
       - /app/node_modules     # node_modules 不被本機蓋掉

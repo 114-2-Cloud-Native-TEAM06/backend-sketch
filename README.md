@@ -71,7 +71,7 @@ docker compose exec app npx prisma migrate dev --name init
 
 **Verify it's running:**
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:8080/health
 # → {"status":"ok"}
 ```
 

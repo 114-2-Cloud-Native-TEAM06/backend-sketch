@@ -52,7 +52,7 @@
 
 - Runtime：Node.js（事件迴圈架構天生適合大量 WebSocket 長連線，不需為每個連線建立獨立 thread）
 - Framework：Express.js（團隊已熟悉，API 需求規模不需 NestJS 的 DI / Module 系統）
-- WebSocket：socket.io（與 Express 搭配，處理即時雙向通訊）
+- WebSocket：`ws`（原生 WebSocket，不依賴 socket.io 私有 protocol；REST 與 WS 分兩個 port 獨立運行）
 - ORM：Prisma（TypeScript-first，schema 定義清晰，migration 管理方便，利於多人協作）
 - Database：PostgreSQL（聊天記錄、用戶資料持久化）
 - Cache / Pub-Sub：Redis（線上狀態儲存、跨 instance 訊息推播）
@@ -61,13 +61,23 @@
 
 **前端 Stack**
 
-- React 或 Vue + socket.io-client
+- React 18 + TypeScript 5.4 + Vite 5 + Zustand（客戶端狀態）+ React Router 6
+- 原生 WebSocket API（`ws-client.ts` 封裝自動重連、heartbeat、send queue、auth-expiry 處理）
+
+**Port 規劃**
+
+| Port | 用途 |
+|---|---|
+| 8080 | REST API（Express.js） |
+| 8081 | WebSocket（`ws` server） |
+| 8082 | user-service REST（預留） |
+| 8083 | notification-service REST（預留） |
 
 **本地開發環境（Docker Compose）**
 
 ```
 services:
-  app       # Node.js + Express
+  app       # Node.js + Express（REST :8080 + WS :8081）
   postgres  # 資料持久化
   redis     # 快取 & Pub/Sub
 ```
@@ -76,59 +86,75 @@ services:
 
 ### API 規劃
 
-**Auth**
+所有路徑加 `/api/v1` 前綴；Auth 統一走 REST，即時訊息走 WebSocket。
+
+**Auth**（`:8080`）
 
 ```
-POST /auth/register
-POST /auth/login       # 回傳 JWT
-POST /auth/refresh
+POST /api/v1/auth/register   # { email, password, display_name } → { token, user }
+POST /api/v1/auth/login      # { email, password } → { token, user }
+POST /api/v1/auth/refresh    # Authorization: Bearer <token> → { token }
 ```
 
-**Users**
+**Users**（`:8080`）
 
 ```
-GET  /users/me
-GET  /users/:id        # 建立聊天室前查詢對方
+GET   /api/v1/users/me       # 我的個人資料
+GET   /api/v1/users/:id      # 查詢特定用戶（建立 chat 前確認對方存在）
+PATCH /api/v1/users/me       # { display_name?, avatar_url? }
 ```
 
-**Rooms**
+**Chats**（`:8080`）
 
 ```
-POST /rooms            # 建立 1 對 1（或群組）聊天室
-GET  /rooms            # 取得我的聊天室列表
-GET  /rooms/:id
+GET  /api/v1/chats                    # 我的 chat 列表
+POST /api/v1/chats                    # 建立 direct（1-1）或 group chat
+GET  /api/v1/chats/:id/members        # chat 成員列表
+GET  /api/v1/chats/:id/messages       # 歷史訊息（cursor-based: ?before_message_id=&limit=50）
 ```
 
-**Messages**
+**WebSocket**（`:8081`，連線：`ws://host:8081/ws/chat?token=<JWT>`）
 
 ```
-GET  /rooms/:id/messages   # 歷史訊息（cursor-based pagination）
+# Client → Server（JSON frame）
+{ "type": "ping" }
+{ "type": "send",   "request_id": "<ULID>", "chat_id": "...", "body": "..." }
+{ "type": "typing", "chat_id": "...", "is_typing": true }
+{ "type": "ack",    "message_ids": ["..."], "status": "DELIVERED" | "READ" }
+
+# Server → Client（JSON frame）
+{ "type": "pong" }
+{ "type": "ack",      "request_id": "...", "message_id": "...", "persisted_at": "..." }
+{ "type": "msg",      "message": { "id", "chat_id", "sender_id", "body", "created_at" } }
+{ "type": "typing",   "chat_id": "...", "user_id": "...", "is_typing": true }
+{ "type": "presence", "user_id": "...", "online": true }
+{ "type": "error",    "reason": "forbidden" | "rate_limited" | "validation_failed" | "auth_expired" }
 ```
 
-**WebSocket Events（透過 socket.io）**
+**Close Code Policy**
 
-```
-# Client → Server
-send_message   { roomId, content }
-join_room      { roomId }
+| Code | 原因 | 前端行為 |
+|---|---|---|
+| 1000 | 正常關閉（使用者登出） | 不重連 |
+| 1001 | idle_timeout（90s 無訊息） | 自動重連（exponential backoff） |
+| 1008 | auth_expired | 清 token，跳回 LoginPage |
+| 1011 | internal_error | 自動重連 |
 
-# Server → Client
-new_message    { roomId, senderId, content, timestamp }
-user_online    { userId }
-user_offline   { userId }
-notification   { type, payload }
-```
+### 開發順序
 
-### 開發順序（建議）
-
-1. Auth + User CRUD + DB schema（Prisma model 定義）
-2. 建立聊天室 + REST API 取歷史訊息
-3. socket.io Gateway + Redis Pub/Sub 跨 instance 推播
-4. 線上狀態、通知、群組聊天（進階需求）
-5. 接入 Kafka、補單元測試 / 整合測試、Docker 完整整合
+1. ✅ Auth（`POST /auth/register`、`POST /auth/login`）+ Prisma schema
+2. ✅ WebSocket server（`:8081`）：連線 JWT 驗證、`ping/pong` heartbeat
+3. Chat CRUD + 歷史訊息 REST API（`:8080`）
+4. WebSocket 訊息收發（`send` → DB 寫入 → `ack` 回傳 + `msg` fanout）
+5. Typing 指示、Presence（線上狀態）、已讀回條
+6. Redis Pub/Sub 跨 instance 推播、Kafka batch write（高負載）
+7. 單元測試 / 整合測試 / k6 壓測報告
 
 ### 架構注意事項
 
+- **Auth 方式**：REST 用 `Authorization: Bearer <JWT>`；WebSocket 用 query string `?token=<JWT>`（瀏覽器無法在 WebSocket 握手時設定 header）
+- **Idempotency**：每次 `send` frame 和 REST POST 訊息都帶 client 生成的 ULID `request_id`，server 5 分鐘內對相同 `request_id` 不重複寫入
 - **ALB Sticky Session**：WebSocket 為狀態性長連線，Load Balancer 必須設定 session affinity，確保同一用戶的連線始終路由到同一個 instance
 - **跨 instance 推播**：User A 連在 Instance 1、User B 連在 Instance 2 時，透過 Redis Pub/Sub 讓 Instance 2 收到訊息後推播給 User B
-- **DB 寫入壓力**：1k msg/sec 全部直寫 PostgreSQL 有風險，需確認 Connection Pool 配置（HikariCP / PgBouncer），或考慮 Kafka Consumer batch write
+- **DB 寫入壓力**：1k msg/sec 全部直寫 PostgreSQL 有風險，需確認 Connection Pool 配置，或考慮 Kafka Consumer batch write
+- **Sender echo 抑制**：`send` 後 server 只回 `ack` 給發送者，`msg` frame 只 fanout 給其他成員，避免重複顯示

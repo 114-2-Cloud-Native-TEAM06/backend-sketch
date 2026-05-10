@@ -2,57 +2,62 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import type { User, AuthResponse, ApiError } from '../types/api-types.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE    = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-interface UserPayload {
-  id: string;
-  username: string;
-}
-
-interface CreateUserResponse {
-  id: string;
-  username: string;
-  displayName: string;
-  email: string;
-  createdAt: Date;
-}
-
-function signToken(user: UserPayload): string {
+function signToken(userId: string, username: string): string {
   return jwt.sign(
-    { userId: user.id, username: user.username },
+    { userId, username },
     process.env.JWT_SECRET!,
     { expiresIn: '7d' },
   );
 }
 
-router.post('/register', async (req: Request, res: Response): Promise<void> => {
-  const { username, displayName, email, password } = req.body;
+function toUserDto(row: {
+  id: string;
+  username: string;
+  email: string;
+  displayName: string;
+  createdAt: Date;
+}): User {
+  return {
+    id:           row.id,
+    username:     row.username,
+    email:        row.email,
+    display_name: row.displayName,
+    avatar_url:   null,
+    created_at:   row.createdAt.toISOString(),
+  };
+}
 
-  if (!username || !displayName || !email || !password) {
-    res.status(400).json({
-      error: 'username, displayName, email, password are required',
-    });
+function apiError(code: string, message: string): ApiError {
+  return { error: { code, message } };
+}
+
+// POST /api/v1/auth/register
+// Body: { username, email, password, display_name }
+router.post('/register', async (req: Request, res: Response): Promise<void> => {
+  const { username, email, password, display_name } = req.body;
+
+  if (!username || !email || !password || !display_name) {
+    res.status(400).json(apiError('VALIDATION_FAILED', 'username, email, password, display_name are required'));
     return;
   }
   if (!USERNAME_RE.test(username)) {
-    res
-      .status(400)
-      .json({
-        error: 'Username may only contain letters, numbers, _ and - (3–32 chars)',
-      });
+    res.status(400).json(apiError('VALIDATION_FAILED', 'Username may only contain letters, numbers, _ and - (3–32 chars)'));
     return;
   }
   if (!EMAIL_RE.test(email)) {
-    res.status(400).json({ error: 'Invalid email format' });
+    res.status(400).json(apiError('VALIDATION_FAILED', 'Invalid email format'));
     return;
   }
   if (password.length < 8) {
-    res.status(400).json({ error: 'Password must be at least 8 characters' });
+    res.status(400).json(apiError('VALIDATION_FAILED', 'Password must be at least 8 characters'));
     return;
   }
 
@@ -62,67 +67,52 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     });
     if (existing) {
       const field = existing.username === username ? 'Username' : 'Email';
-      res.status(409).json({ error: `${field} already taken` });
+      res.status(409).json(apiError('CONFLICT', `${field} already taken`));
       return;
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const user = await prisma.user.create({
-      data: { username, displayName, email, password: hashedPassword },
-      select: {
-        id: true,
-        username: true,
-        displayName: true,
-        email: true,
-        createdAt: true,
-      },
+    const hashed = await bcrypt.hash(password, 10);
+    const row = await prisma.user.create({
+      data: { username, displayName: display_name, email, password: hashed },
+      select: { id: true, username: true, email: true, displayName: true, createdAt: true },
     });
 
-    const token = signToken(user);
-
-    res.status(201).json({ user, token });
+    const user  = toUserDto(row);
+    const token = signToken(row.id, row.username);
+    res.status(201).json({ token, user } satisfies AuthResponse);
   } catch (err) {
     console.error('[register]', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
 });
 
+// POST /api/v1/auth/login
+// Body: { email, password }
 router.post('/login', async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    res.status(400).json({ error: 'email and password are required' });
+    res.status(400).json(apiError('VALIDATION_FAILED', 'email and password are required'));
     return;
   }
 
   try {
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    const token = signToken(user);
-
-    res.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        displayName: user.displayName,
-        email: user.email,
-      },
-      token,
+    const row = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, username: true, email: true, displayName: true, createdAt: true, password: true },
     });
+
+    if (!row || !(await bcrypt.compare(password, row.password))) {
+      res.status(401).json(apiError('AUTH_REQUIRED', 'Invalid email or password'));
+      return;
+    }
+
+    const user  = toUserDto(row);
+    const token = signToken(row.id, row.username);
+    res.json({ token, user } satisfies AuthResponse);
   } catch (err) {
     console.error('[login]', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
 });
 

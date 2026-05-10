@@ -22,7 +22,7 @@ export default function authMiddleware(
   const authHeader = req.headers['authorization'];
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing or invalid token' });
+    res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Missing or invalid token' } });
     return;
   }
 
@@ -32,7 +32,7 @@ export default function authMiddleware(
     const payload = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
     req.user = payload;
     next();
-  } catch (err) {
-    res.status(401).json({ error: 'Token expired or invalid' });
+  } catch {
+    res.status(401).json({ error: { code: 'AUTH_REQUIRED', message: 'Token expired or invalid' } });
   }
 }
