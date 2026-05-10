@@ -14,6 +14,7 @@ services:
       - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=dev_secret_change_in_prod
+      - API_VERSION=1
     depends_on:
       postgres:
         condition: service_healthy

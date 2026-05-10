@@ -77,6 +77,26 @@ curl http://localhost:3000/health
 
 ---
 
+## Development
+
+### Start Development Environment
+
+```bash
+docker compose up -d
+```
+
+### Visualize Database
+
+Open Prisma Studio to view and manage database records:
+
+```bash
+docker compose exec app npx prisma studio --hostname 0.0.0.0
+```
+
+Then visit `http://localhost:5555` in your browser.
+
+---
+
 ## Evaluation Criteria
 
 | Weight | Category | Description |

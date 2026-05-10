@@ -12,7 +12,8 @@ const io = new Server(httpServer, {
 
 app.use(express.json())
 
-app.use('/auth', authRoutes)
+const API_VERSION = process.env.API_VERSION || '1'
+app.use(`/api/v${API_VERSION}`, authRoutes)
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
