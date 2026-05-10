@@ -8,10 +8,7 @@ RUN apk add --no-cache openssl
 
 RUN npm install
 
-# nodemon 全域安裝，用於熱重載
-RUN npm install -g nodemon
-
 # 實際 code 來自 volume mount，不需要 COPY src
 EXPOSE 3000
 
-CMD ["nodemon", "src/index.js"]
+CMD ["npx", "tsx", "watch", "src/index.ts"]
