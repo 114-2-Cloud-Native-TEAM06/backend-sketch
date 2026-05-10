@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../middleware/auth.js';
-import type { User, ApiError } from '../types/api-types.js';
+import type { User, ApiError, ErrorCode } from '../types/api-types.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
-function apiError(code: string, message: string): ApiError {
+function apiError(code: ErrorCode, message: string): ApiError {
   return { error: { code, message } };
 }
 

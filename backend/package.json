@@ -4,7 +4,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "nodemon --exec tsx src/index.ts",
+    "dev": "nodemon --ext ts,js,json --exec tsx src/index.ts",
     "start": "node --loader ts-node/esm src/index.ts",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",

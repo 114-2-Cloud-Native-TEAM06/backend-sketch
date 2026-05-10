@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../middleware/auth.js';
-import type { Chat, Message, User, ApiError, CreateChatRequest } from '../types/api-types.js';
+import type { Chat, Message, User, ApiError, CreateChatRequest, ErrorCode } from '../types/api-types.js';
 
 const router = Router();
 const prisma = new PrismaClient();
 
-function apiError(code: string, message: string): ApiError {
+function apiError(code: ErrorCode, message: string): ApiError {
   return { error: { code, message } };
 }
 
@@ -37,6 +37,14 @@ function toUserDto(row: {
     display_name: row.displayName,
     created_at:   row.createdAt.toISOString(),
   };
+}
+
+// Accepts either a DB id (cuid/uuid) or a username — returns null if not found.
+async function resolveUser(identifier: string) {
+  return prisma.user.findFirst({
+    where: { OR: [{ id: identifier }, { username: identifier }] },
+    select: { id: true, displayName: true },
+  });
 }
 
 // GET /api/v1/chats  — 我的 chat 列表，按最後訊息時間排序
@@ -101,18 +109,15 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
         res.status(400).json(apiError('VALIDATION_FAILED', 'direct chat requires exactly 1 member_id'));
         return;
       }
-      const targetId = member_ids[0];
-      if (targetId === userId) {
-        res.status(400).json(apiError('VALIDATION_FAILED', 'cannot create a direct chat with yourself'));
+      const rawTarget = member_ids[0];
+      const targetUser = await resolveUser(rawTarget);
+      if (!targetUser) {
+        res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`));
         return;
       }
 
-      const targetUser = await prisma.user.findUnique({
-        where: { id: targetId },
-        select: { id: true, displayName: true },
-      });
-      if (!targetUser) {
-        res.status(404).json(apiError('NOT_FOUND', 'User not found'));
+      if (targetUser.id === userId) {
+        res.status(400).json(apiError('VALIDATION_FAILED', 'cannot create a direct chat with yourself'));
         return;
       }
 
@@ -122,7 +127,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
           isGroup: false,
           AND: [
             { members: { some: { userId } } },
-            { members: { some: { userId: targetId } } },
+            { members: { some: { userId: targetUser.id } } },
           ],
         },
         include: {
@@ -147,7 +152,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
       const room = await prisma.room.create({
         data: {
           isGroup: false,
-          members: { create: [{ userId }, { userId: targetId }] },
+          members: { create: [{ userId }, { userId: targetUser.id }] },
         },
       });
 
@@ -170,7 +175,15 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
         return;
       }
 
-      const allIds = [...new Set([userId, ...member_ids])];
+      const resolvedMembers = await Promise.all(member_ids.map(resolveUser));
+      const badIdx = resolvedMembers.findIndex((u) => u === null);
+      if (badIdx !== -1) {
+        res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[${badIdx}]: user "${member_ids[badIdx]}" not found`));
+        return;
+      }
+      const resolvedIds = resolvedMembers.map((u) => u!.id);
+
+      const allIds = [...new Set([userId, ...resolvedIds])];
       const room = await prisma.room.create({
         data: {
           isGroup: true,

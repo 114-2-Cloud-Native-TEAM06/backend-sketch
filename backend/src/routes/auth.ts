@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
-import type { User, AuthResponse, ApiError } from '../types/api-types.js';
+import type { User, AuthResponse, ApiError, ErrorCode } from '../types/api-types.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -30,12 +30,12 @@ function toUserDto(row: {
     username:     row.username,
     email:        row.email,
     display_name: row.displayName,
-    avatar_url:   null,
+    avatar_url:   undefined,
     created_at:   row.createdAt.toISOString(),
   };
 }
 
-function apiError(code: string, message: string): ApiError {
+function apiError(code: ErrorCode, message: string): ApiError {
   return { error: { code, message } };
 }
 
