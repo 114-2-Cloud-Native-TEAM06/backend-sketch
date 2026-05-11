@@ -104,6 +104,12 @@ To run only unit tests in Docker:
 docker compose run --rm test npm run test:unit
 ```
 
+To generate Vitest coverage reports:
+
+```bash
+docker compose run --rm test npm run test:coverage
+```
+
 Integration tests require a PostgreSQL test database. To run only integration
 tests in Docker:
 

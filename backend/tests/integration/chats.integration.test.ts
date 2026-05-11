@@ -62,6 +62,56 @@ test('creates a direct chat and stores room memberships in PostgreSQL', async ()
   expect(members.map((member) => member.userId).sort()).toEqual([alice.id, bob.id].sort());
 });
 
+test('creates a group chat and returns its members from PostgreSQL', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const bob = await prisma.user.create({
+    data: {
+      username: 'bob',
+      email: 'bob@example.com',
+      displayName: 'Bob',
+      password: 'hashed-password',
+    },
+  });
+  const carol = await prisma.user.create({
+    data: {
+      username: 'carol',
+      email: 'carol@example.com',
+      displayName: 'Carol',
+      password: 'hashed-password',
+    },
+  });
+
+  // Act
+  const createRes = await requestJson<{ id: string; type: string; name: string }>(
+    createChatRouter(prisma),
+    '/',
+    {
+      method: 'POST',
+      headers: authHeaders(alice.id, alice.username),
+      body: JSON.stringify({ type: 'group', name: 'Study Group', member_ids: [bob.username, carol.username] }),
+    },
+  );
+  const membersRes = await requestJson<Array<{ username: string }>>(
+    createChatRouter(prisma),
+    `/${createRes.body.id}/members`,
+    { headers: authHeaders(alice.id, alice.username) },
+  );
+
+  // Assert
+  expect(createRes.status).toBe(201);
+  expect(createRes.body).toMatchObject({ type: 'group', name: 'Study Group' });
+  expect(membersRes.status).toBe(200);
+  expect(membersRes.body.map((user) => user.username).sort()).toEqual(['alice', 'bob', 'carol']);
+});
+
 test('rejects unauthenticated direct chat creation and does not create a room', async () => {
   // Arrange
   const bob = await prisma.user.create({
@@ -168,6 +218,46 @@ test('rejects non-member message access without returning room messages', async 
   });
 });
 
+test('rejects access to another user chat detail', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const bob = await prisma.user.create({
+    data: {
+      username: 'bob',
+      email: 'bob@example.com',
+      displayName: 'Bob',
+      password: 'hashed-password',
+    },
+  });
+  const room = await prisma.room.create({
+    data: {
+      isGroup: false,
+      members: { create: [{ userId: alice.id }] },
+    },
+  });
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma), `/${room.id}`, {
+    headers: authHeaders(bob.id, bob.username),
+  });
+
+  // Assert
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({
+    error: {
+      code: 'NOT_FOUND',
+      message: 'Chat not found',
+    },
+  });
+});
+
 test('stores a message and moves the room to the latest-message order', async () => {
   // Arrange
   const alice = await prisma.user.create({
@@ -207,6 +297,113 @@ test('stores a message and moves the room to the latest-message order', async ()
   expect(message.content).toBe('hello from integration');
   expect(message.senderId).toBe(alice.id);
   expect(updatedRoom.lastMessageAt.toISOString()).toBe(message.createdAt.toISOString());
+});
+
+test('stores a long message with special characters without truncation', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const room = await prisma.room.create({
+    data: {
+      isGroup: false,
+      members: { create: [{ userId: alice.id }] },
+    },
+  });
+  const body = `${'x'.repeat(5000)} 測試 <script>alert("x")</script>`;
+
+  // Act
+  const res = await requestJson<{ id: string; body: string }>(createChatRouter(prisma), `/${room.id}/messages`, {
+    method: 'POST',
+    headers: authHeaders(alice.id, alice.username),
+    body: JSON.stringify({ body }),
+  });
+
+  // Assert
+  const message = await prisma.message.findUniqueOrThrow({ where: { id: res.body.id } });
+  expect(res.status).toBe(201);
+  expect(res.body.body).toBe(body);
+  expect(message.content).toBe(body);
+});
+
+test('reads older messages using before_message_id cursor pagination', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const room = await prisma.room.create({
+    data: {
+      isGroup: false,
+      members: { create: [{ userId: alice.id }] },
+    },
+  });
+  const older = await prisma.message.create({
+    data: {
+      roomId: room.id,
+      senderId: alice.id,
+      content: 'older',
+      createdAt: new Date('2026-05-07T10:00:00.000Z'),
+    },
+  });
+  const newer = await prisma.message.create({
+    data: {
+      roomId: room.id,
+      senderId: alice.id,
+      content: 'newer',
+      createdAt: new Date('2026-05-07T10:01:00.000Z'),
+    },
+  });
+
+  // Act
+  const res = await requestJson<Array<{ id: string; body: string }>>(
+    createChatRouter(prisma),
+    `/${room.id}/messages?before_message_id=${newer.id}`,
+    { headers: authHeaders(alice.id, alice.username) },
+  );
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(res.body).toEqual([
+    expect.objectContaining({ id: older.id, body: 'older' }),
+  ]);
+});
+
+test('accepts typing event from a room member without response body', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const room = await prisma.room.create({
+    data: {
+      isGroup: false,
+      members: { create: [{ userId: alice.id }] },
+    },
+  });
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma), `/${room.id}/typing`, {
+    method: 'POST',
+    headers: authHeaders(alice.id, alice.username),
+  });
+
+  // Assert
+  expect(res.status).toBe(204);
+  expect(res.body).toBeUndefined();
 });
 
 test('lists chats with the asynchronously persisted latest message', async () => {

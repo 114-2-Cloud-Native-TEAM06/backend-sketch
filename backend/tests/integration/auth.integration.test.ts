@@ -82,6 +82,29 @@ test('register rejects duplicate username and leaves only one persisted user', a
   expect(users).toHaveLength(1);
 });
 
+test('register persists special characters in display name without altering password hashing', async () => {
+  // Arrange
+  const displayName = 'Alice 測試 🚀 <script>';
+
+  // Act
+  const res = await requestJson<{ user: { display_name: string } }>(createAuthRouter(prisma), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'password123',
+      display_name: displayName,
+    }),
+  });
+
+  // Assert
+  const row = await prisma.user.findUniqueOrThrow({ where: { email: 'alice@example.com' } });
+  expect(res.status).toBe(201);
+  expect(res.body.user.display_name).toBe(displayName);
+  expect(row.displayName).toBe(displayName);
+  expect(row.password).not.toBe('password123');
+});
+
 test('login authenticates a user created in PostgreSQL', async () => {
   // Arrange
   await requestJson(createAuthRouter(prisma), '/register', {

@@ -108,6 +108,94 @@ test('POST / rejects direct chat creation with the current user', async () => {
   });
 });
 
+test('POST / rejects null member_ids before resolving users', async () => {
+  // Arrange
+  let resolvedUser = false;
+  const prisma = {
+    user: {
+      findFirst: async () => {
+        resolvedUser = true;
+        return null;
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ type: 'direct', member_ids: null }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(resolvedUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'type and member_ids are required',
+    },
+  });
+});
+
+test('POST / rejects unsupported chat type', async () => {
+  // Arrange
+  const prisma = {
+    user: {
+      findFirst: async () => {
+        throw new Error('user lookup should not be called for unsupported type');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ type: 'broadcast', member_ids: ['bob'] }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'type must be "direct" or "group"',
+    },
+  });
+});
+
+test('POST / creates a group chat with special characters in the name', async () => {
+  // Arrange
+  let createdMembers: Array<{ userId: string }> = [];
+  const prisma = {
+    user: {
+      findFirst: async (args: { where: { OR: Array<{ id?: string; username?: string }> } }) => ({
+        id: args.where.OR[0].id === 'bob' ? 'user-2' : 'user-3',
+        displayName: 'Member',
+      }),
+    },
+    room: {
+      create: async (args: { data: { name: string; members: { create: Array<{ userId: string }> } } }) => {
+        createdMembers = args.data.members.create;
+        return { id: 'room-1', name: args.data.name };
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson<{ name: string; type: string }>(createChatRouter(prisma as never), '/', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ type: 'group', name: '工程 🚀 <team>', member_ids: ['bob', 'carol'] }),
+  });
+
+  // Assert
+  expect(res.status).toBe(201);
+  expect(res.body).toMatchObject({ type: 'group', name: '工程 🚀 <team>' });
+  expect(createdMembers).toEqual([{ userId: 'user-1' }, { userId: 'user-2' }, { userId: 'user-3' }]);
+});
+
 test('GET /:chatId/messages rejects non-members before querying messages', async () => {
   // Arrange
   let queriedMessages = false;

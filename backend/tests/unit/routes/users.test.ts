@@ -93,6 +93,36 @@ test('PATCH /me requires at least one supported profile field', async () => {
   });
 });
 
+test('PATCH /me rejects null profile fields without updating persistence', async () => {
+  // Arrange
+  let updatedUser = false;
+  const prisma = {
+    user: {
+      update: async () => {
+        updatedUser = true;
+        return {};
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createUserRouter(prisma as never), '/me', {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({ display_name: null, avatar_url: null }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(updatedUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'At least one of display_name or avatar_url is required',
+    },
+  });
+});
+
 test('PATCH /me updates display name asynchronously and returns the updated dto', async () => {
   // Arrange
   const prisma = {
@@ -119,4 +149,30 @@ test('PATCH /me updates display name asynchronously and returns the updated dto'
   // Assert
   expect(res.status).toBe(200);
   expect(res.body.display_name).toBe('Alice Updated');
+});
+
+test('GET /:id returns not found for unknown users', async () => {
+  // Arrange
+  const prisma = {
+    user: {
+      findUnique: async (args: { where: { id: string } }) => {
+        expect(args.where.id).toBe('missing-user');
+        return null;
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createUserRouter(prisma as never), '/missing-user', {
+    headers: authHeaders,
+  });
+
+  // Assert
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({
+    error: {
+      code: 'NOT_FOUND',
+      message: 'User not found',
+    },
+  });
 });

@@ -22,6 +22,19 @@ Run only unit tests in Docker:
 docker compose run --rm test npm run test:unit
 ```
 
+Generate Vitest coverage reports:
+
+```sh
+docker compose run --rm test npm run test:coverage
+```
+
+Coverage is generated with `@vitest/coverage-v8`:
+
+- Unit coverage reports are written to `coverage/unit`.
+- Integration coverage reports are written to `coverage/integration`.
+- The reports include statement, line, function, and branch coverage.
+- Runtime-only source files are measured; type-only files are excluded from integration coverage.
+
 Run only integration tests in Docker:
 
 ```sh
@@ -52,7 +65,7 @@ All unit tests are written in AAA style (`Arrange`, `Act`, `Assert`) and cover:
 
 - Happy Path: successful registration, login, protected user lookup, direct chat creation, and message creation.
 - Negative Path: missing required fields, invalid password, non-member access, and unsupported update payloads.
-- Edge Cases: invalid username format, self direct chat rejection, empty message body, and message pagination limit capping.
+- Edge Cases: extreme length usernames, invalid email, null values, special-character group names, self direct chat rejection, empty message body, and message pagination limit capping.
 - Security: missing/tampered bearer token rejection, password hashing, duplicate registration conflict without password leakage, and protected routes avoiding persistence calls when unauthenticated.
 - Asynchronous: bcrypt password comparison, delayed persistence mocks, and awaited room timestamp updates.
 
@@ -144,11 +157,11 @@ Integration tests use the real Prisma client and a real PostgreSQL database. The
 
 All integration tests are written in AAA style (`Arrange`, `Act`, `Assert`) and cover:
 
-- Happy Path: registering, logging in, creating direct chats, creating messages, and listing chats with the latest message.
+- Happy Path: registering, logging in, creating direct/group chats, profile reads/updates, creating messages, typing events, health checks, and listing chats with the latest message.
 - Negative Path: duplicate registration, invalid login password, unauthenticated chat creation, non-member message access, and empty message body.
-- Edge Cases: duplicate username conflict leaves only one user row, empty/whitespace-only message bodies create no message rows, and latest-message ordering is validated after writes.
-- Security: passwords are stored hashed, invalid login responses do not leak password data, unauthenticated requests create no rooms, and non-members cannot read private message content.
-- Asynchronous: Prisma writes are verified after the HTTP response, room `lastMessageAt` is verified against the persisted message timestamp, and chat listing observes the asynchronously persisted latest message.
+- Edge Cases: special-character display names, long message bodies, duplicate username conflict leaves only one user row, empty/whitespace-only message bodies create no message rows, cursor pagination, and latest-message ordering after writes.
+- Security: passwords are stored hashed, invalid login responses do not leak password data, unauthenticated requests create no rooms, non-members cannot read private message content or chat detail, and user lookups do not expose password data.
+- Asynchronous: Prisma writes are verified after the HTTP response, room `lastMessageAt` is verified against the persisted message timestamp, chat listing observes the asynchronously persisted latest message, and WebSocket ping/malformed-frame timeout behavior is tested.
 
 ### Auth Workflows
 
@@ -161,6 +174,7 @@ Covered workflows:
 - Verify the stored password is hashed and does not equal the plain text password.
 - Verify the returned JWT is valid and points to the persisted user id.
 - Attempt duplicate registration and verify only one matching user remains in PostgreSQL.
+- Persist special characters in `display_name` while keeping password hashing intact.
 - Register a user, then authenticate the same user through `POST /login`.
 - Verify successful login returns the expected user DTO and a token string.
 - Verify invalid login rejects without leaking password details.
@@ -175,22 +189,57 @@ Covered workflows:
 - Create a direct chat through `POST /`.
 - Verify the API response identifies the room as a direct chat and uses the target user's display name.
 - Verify `RoomMember` rows are created for both participants.
+- Create a group chat and verify `GET /:chatId/members`.
 - Verify unauthenticated direct chat creation does not create a room.
 - Verify whitespace-only message creation is rejected and creates no message row.
 - Verify a non-member cannot read private room messages.
+- Verify a non-member cannot access another user's chat detail.
 - Seed a user and room directly in PostgreSQL.
 - Send a message through `POST /:chatId/messages`.
+- Persist long message bodies with special characters without truncation.
+- Read older messages using `before_message_id` cursor pagination.
+- Accept room-member typing events with a `204` response.
 - Verify the message row is persisted with trimmed content, sender id, and room id.
 - Verify the room `lastMessageAt` is moved to the created message timestamp.
 - Verify chat listing returns the asynchronously persisted latest message.
+
+### User Workflows
+
+File: `integration/users.integration.test.ts`
+
+Covered workflows:
+
+- Return the authenticated user's profile from PostgreSQL.
+- Reject unauthenticated profile access.
+- Update the authenticated user's display name, including special characters.
+- Reject null profile updates without changing the row.
+- Return another user by id without exposing password data.
+- Return `404 NOT_FOUND` for unknown user ids.
+
+### WebSocket Workflows
+
+File: `integration/ws.integration.test.ts`
+
+Covered workflows:
+
+- Reject missing token connections with close code `1008`.
+- Reject tampered token connections.
+- Respond asynchronously to `ping` frames with `pong`.
+- Ignore malformed frames until timeout while keeping the connection open.
+
+### REST App Workflows
+
+File: `integration/rest-app.integration.test.ts`
+
+Covered workflows:
+
+- Verify `/health` is available through the assembled REST app without database access.
 
 ## Current Intentional Gaps
 
 The current suite focuses on the backend's core happy paths and the most important validation/auth boundaries. Additional cases worth adding later:
 
-- Duplicate registration conflicts for username or email.
 - Login with missing fields or unknown email.
-- Unauthorized access for all protected chat and user endpoints.
-- Chat creation with invalid room type, missing members, unknown users, or duplicate direct rooms.
+- Integration coverage for invalid chat type, missing members, unknown users, or duplicate direct rooms.
 - Full `GET /chats` ordering across multiple rooms and unread-count behavior.
-- `PATCH /me` successful profile update persistence against the real database.
+- WebSocket message persistence/broadcast behavior beyond the currently implemented ping/pong protocol.

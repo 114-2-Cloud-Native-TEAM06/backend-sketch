@@ -69,6 +69,142 @@ test('register rejects invalid username format before querying the database', as
   });
 });
 
+test('register rejects extreme length username before querying the database', async () => {
+  // Arrange
+  let queriedUser = false;
+  const prisma = {
+    user: {
+      findFirst: async () => {
+        queriedUser = true;
+        return null;
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'a'.repeat(1000),
+      email: 'alice@example.com',
+      password: 'password123',
+      display_name: 'Alice',
+    }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(queriedUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'Username may only contain letters, numbers, _ and - (3–32 chars)',
+    },
+  });
+});
+
+test('register rejects null password values before persistence', async () => {
+  // Arrange
+  let createdUser = false;
+  const prisma = {
+    user: {
+      create: async () => {
+        createdUser = true;
+        return {};
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'not-an-email',
+      password: null,
+      display_name: 'Alice',
+    }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(createdUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'username, email, password, display_name are required',
+    },
+  });
+});
+
+test('register rejects invalid email format before persistence', async () => {
+  // Arrange
+  let createdUser = false;
+  const prisma = {
+    user: {
+      create: async () => {
+        createdUser = true;
+        return {};
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'not-an-email',
+      password: 'password123',
+      display_name: 'Alice',
+    }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(createdUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'Invalid email format',
+    },
+  });
+});
+
+test('register rejects short passwords before persistence', async () => {
+  // Arrange
+  let createdUser = false;
+  const prisma = {
+    user: {
+      create: async () => {
+        createdUser = true;
+        return {};
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'short',
+      display_name: 'Alice',
+    }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(createdUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'Password must be at least 8 characters',
+    },
+  });
+});
+
 test('register hashes the password and returns a signed token with user dto', async () => {
   // Arrange
   let capturedPassword = '';
