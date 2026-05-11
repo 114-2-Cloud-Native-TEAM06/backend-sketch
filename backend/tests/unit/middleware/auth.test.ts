@@ -15,8 +15,13 @@ function protectedRouter(): Router {
 }
 
 test('auth middleware rejects missing bearer token', async () => {
-  const res = await requestJson(protectedRouter(), '/protected');
+  // Arrange
+  const router = protectedRouter();
 
+  // Act
+  const res = await requestJson(router, '/protected');
+
+  // Assert
   expect(res.status).toBe(401);
   expect(res.body).toEqual({
     error: {
@@ -26,15 +31,37 @@ test('auth middleware rejects missing bearer token', async () => {
   });
 });
 
+test('auth middleware rejects tampered jwt tokens', async () => {
+  // Arrange
+  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+
+  // Act
+  const res = await requestJson(protectedRouter(), '/protected', {
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Token expired or invalid',
+    },
+  });
+});
+
 test('auth middleware attaches verified jwt payload to request', async () => {
+  // Arrange
   const token = jwt.sign({ userId: 'user-1', username: 'alice' }, process.env.JWT_SECRET!);
 
+  // Act
   const res = await requestJson<{ user: { userId: string; username: string } }>(
     protectedRouter(),
     '/protected',
     { headers: { authorization: `Bearer ${token}` } },
   );
 
+  // Assert
   expect(res.status).toBe(200);
   expect(res.body.user.userId).toBe('user-1');
   expect(res.body.user.username).toBe('alice');

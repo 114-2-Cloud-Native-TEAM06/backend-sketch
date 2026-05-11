@@ -9,6 +9,7 @@ const token = jwt.sign({ userId: 'user-1', username: 'alice' }, process.env.JWT_
 const authHeaders = { authorization: `Bearer ${token}` };
 
 test('POST / creates a direct chat with the current user and resolved target user', async () => {
+  // Arrange
   let createdMembers: Array<{ userId: string }> = [];
   const prisma = {
     user: {
@@ -26,6 +27,7 @@ test('POST / creates a direct chat with the current user and resolved target use
     },
   };
 
+  // Act
   const res = await requestJson<{ id: string; type: string; name: string; unread_count: number }>(
     createChatRouter(prisma as never),
     '/',
@@ -36,6 +38,7 @@ test('POST / creates a direct chat with the current user and resolved target use
     },
   );
 
+  // Assert
   expect(res.status).toBe(201);
   expect(res.body).toEqual({
     id: 'room-1',
@@ -46,7 +49,67 @@ test('POST / creates a direct chat with the current user and resolved target use
   expect(createdMembers).toEqual([{ userId: 'user-1' }, { userId: 'user-2' }]);
 });
 
+test('POST / rejects unauthenticated chat creation before touching persistence', async () => {
+  // Arrange
+  let queriedUser = false;
+  const prisma = {
+    user: {
+      findFirst: async () => {
+        queriedUser = true;
+        return null;
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'direct', member_ids: ['bob'] }),
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(queriedUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Missing or invalid token',
+    },
+  });
+});
+
+test('POST / rejects direct chat creation with the current user', async () => {
+  // Arrange
+  const prisma = {
+    user: {
+      findFirst: async () => ({ id: 'user-1', displayName: 'Alice' }),
+    },
+    room: {
+      findMany: async () => {
+        throw new Error('room lookup should not be called');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ type: 'direct', member_ids: ['alice'] }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'cannot create a direct chat with yourself',
+    },
+  });
+});
+
 test('GET /:chatId/messages rejects non-members before querying messages', async () => {
+  // Arrange
   let queriedMessages = false;
   const prisma = {
     roomMember: {
@@ -60,10 +123,12 @@ test('GET /:chatId/messages rejects non-members before querying messages', async
     },
   };
 
+  // Act
   const res = await requestJson(createChatRouter(prisma as never), '/room-1/messages', {
     headers: authHeaders,
   });
 
+  // Assert
   expect(res.status).toBe(403);
   expect(queriedMessages).toBe(false);
   expect(res.body).toEqual({
@@ -74,7 +139,34 @@ test('GET /:chatId/messages rejects non-members before querying messages', async
   });
 });
 
+test('GET /:chatId/messages caps requested page size at 100', async () => {
+  // Arrange
+  let capturedTake = 0;
+  const prisma = {
+    roomMember: {
+      findUnique: async () => ({ userId: 'user-1', roomId: 'room-1' }),
+    },
+    message: {
+      findMany: async (args: { take: number }) => {
+        capturedTake = args.take;
+        return [];
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/room-1/messages?limit=500', {
+    headers: authHeaders,
+  });
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(capturedTake).toBe(100);
+  expect(res.body).toEqual([]);
+});
+
 test('POST /:chatId/messages trims content, persists the message, and updates room order timestamp', async () => {
+  // Arrange
   const createdAt = new Date('2026-05-07T10:00:00.000Z');
   let createdMessageData: { content: string; senderId: string; roomId: string } | undefined;
   let roomUpdateData: { lastMessageAt: Date } | undefined;
@@ -106,6 +198,7 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
     },
   };
 
+  // Act
   const res = await requestJson<{ id: string; body: string; created_at: string }>(
     createChatRouter(prisma as never),
     '/room-1/messages',
@@ -116,6 +209,7 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
     },
   );
 
+  // Assert
   expect(res.status).toBe(201);
   expect(createdMessageData).toEqual({ content: 'hello', senderId: 'user-1', roomId: 'room-1' });
   expect(roomUpdateData).toEqual({ lastMessageAt: createdAt });
@@ -127,4 +221,43 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
     body: 'hello',
     created_at: createdAt.toISOString(),
   });
+});
+
+test('POST /:chatId/messages waits for asynchronous room timestamp update before responding', async () => {
+  // Arrange
+  const createdAt = new Date('2026-05-07T10:00:00.000Z');
+  let updateFinished = false;
+  const prisma = {
+    roomMember: {
+      findUnique: async () => ({ userId: 'user-1', roomId: 'room-1' }),
+    },
+    message: {
+      create: async () => ({
+        id: 'msg-1',
+        content: 'hello',
+        createdAt,
+        senderId: 'user-1',
+        roomId: 'room-1',
+      }),
+    },
+    room: {
+      update: async () => new Promise((resolve) => {
+        setTimeout(() => {
+          updateFinished = true;
+          resolve({});
+        }, 10);
+      }),
+    },
+  };
+
+  // Act
+  const res = await requestJson(createChatRouter(prisma as never), '/room-1/messages', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ body: 'hello' }),
+  });
+
+  // Assert
+  expect(res.status).toBe(201);
+  expect(updateFinished).toBe(true);
 });
