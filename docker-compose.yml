@@ -23,6 +23,42 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm test"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=test
+      - DATABASE_URL=postgresql://admin:password@postgres-test:5432/imdb_test
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_secret_change_in_prod
+      - API_VERSION=1
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    profiles:
+      - test
+
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: imdb_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d imdb_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
   postgres:
     image: postgres:16-alpine
     ports:

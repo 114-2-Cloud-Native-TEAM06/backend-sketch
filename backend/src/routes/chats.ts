@@ -3,9 +3,6 @@ import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../middleware/auth.js';
 import type { Chat, Message, User, ApiError, CreateChatRequest, ErrorCode } from '../types/api-types.js';
 
-const router = Router();
-const prisma = new PrismaClient();
-
 function apiError(code: ErrorCode, message: string): ApiError {
   return { error: { code, message } };
 }
@@ -40,61 +37,64 @@ function toUserDto(row: {
 }
 
 // Accepts either a DB id (cuid/uuid) or a username — returns null if not found.
-async function resolveUser(identifier: string) {
+async function resolveUser(prisma: PrismaClient, identifier: string) {
   return prisma.user.findFirst({
     where: { OR: [{ id: identifier }, { username: identifier }] },
     select: { id: true, displayName: true },
   });
 }
 
-// GET /api/v1/chats  — 我的 chat 列表，按最後訊息時間排序
-router.get('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId = req.user!.userId;
+export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Router {
+  const router = Router();
 
-  try {
-    const memberships = await prisma.roomMember.findMany({
-      where: { userId },
-      include: {
-        room: {
-          include: {
-            members: {
-              include: { user: { select: { id: true, displayName: true } } },
-            },
-            messages: {
-              orderBy: { createdAt: 'desc' },
-              take: 1,
+  // GET /api/v1/chats  — 我的 chat 列表，按最後訊息時間排序
+  router.get('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+    const userId = req.user!.userId;
+
+    try {
+      const memberships = await prisma.roomMember.findMany({
+        where: { userId },
+        include: {
+          room: {
+            include: {
+              members: {
+                include: { user: { select: { id: true, displayName: true } } },
+              },
+              messages: {
+                orderBy: { createdAt: 'desc' },
+                take: 1,
+              },
             },
           },
         },
-      },
-      orderBy: { room: { lastMessageAt: 'desc' } },
-    });
+        orderBy: { room: { lastMessageAt: 'desc' } },
+      });
 
-    const chats: Chat[] = memberships.map((m) => {
-      const room = m.room;
-      const otherMember = room.isGroup
-        ? undefined
-        : room.members.find((rm) => rm.userId !== userId)?.user;
-      const lastMsg = room.messages[0];
+      const chats: Chat[] = memberships.map((m) => {
+        const room = m.room;
+        const otherMember = room.isGroup
+          ? undefined
+          : room.members.find((rm) => rm.userId !== userId)?.user;
+        const lastMsg = room.messages[0];
 
-      return {
-        id:           room.id,
-        type:         room.isGroup ? 'group' : 'direct',
-        name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
-        last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
-        unread_count: 0,
-      };
-    });
+        return {
+          id:           room.id,
+          type:         room.isGroup ? 'group' : 'direct',
+          name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
+          last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
+          unread_count: 0,
+        };
+      });
 
-    res.json(chats);
-  } catch (err) {
-    console.error('[GET /chats]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
-});
+      res.json(chats);
+    } catch (err) {
+      console.error('[GET /chats]', err);
+      res.status(500).json(apiError('INTERNAL', 'Internal server error'));
+    }
+  });
 
 // POST /api/v1/chats  — 建立 direct 或 group chat
-router.post('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.post('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
   const { type, name, member_ids } = req.body as CreateChatRequest;
 
@@ -110,7 +110,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
         return;
       }
       const rawTarget = member_ids[0];
-      const targetUser = await resolveUser(rawTarget);
+      const targetUser = await resolveUser(prisma, rawTarget);
       if (!targetUser) {
         res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`));
         return;
@@ -175,7 +175,7 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
         return;
       }
 
-      const resolvedMembers = await Promise.all(member_ids.map(resolveUser));
+      const resolvedMembers = await Promise.all(member_ids.map((id) => resolveUser(prisma, id)));
       const badIdx = resolvedMembers.findIndex((u) => u === null);
       if (badIdx !== -1) {
         res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[${badIdx}]: user "${member_ids[badIdx]}" not found`));
@@ -206,10 +206,10 @@ router.post('/', authMiddleware, async (req: Request, res: Response): Promise<vo
     console.error('[POST /chats]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
 // GET /api/v1/chats/:chatId
-router.get('/:chatId', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.get('/:chatId', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId  = req.user!.userId;
   const { chatId } = req.params;
 
@@ -243,10 +243,10 @@ router.get('/:chatId', authMiddleware, async (req: Request, res: Response): Prom
     console.error('[GET /chats/:id]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
 // GET /api/v1/chats/:chatId/members
-router.get('/:chatId/members', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.get('/:chatId/members', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId  = req.user!.userId;
   const { chatId } = req.params;
 
@@ -272,11 +272,11 @@ router.get('/:chatId/members', authMiddleware, async (req: Request, res: Respons
     console.error('[GET /chats/:id/members]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
 // GET /api/v1/chats/:chatId/messages?before_message_id=&limit=50
 // 回傳舊→新倒序（最新在前），前端 prepend 到頂部
-router.get('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.get('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId  = req.user!.userId;
   const { chatId } = req.params;
   const { before_message_id, limit = '50' } = req.query;
@@ -317,10 +317,10 @@ router.get('/:chatId/messages', authMiddleware, async (req: Request, res: Respon
     console.error('[GET /chats/:id/messages]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
 // POST /api/v1/chats/:chatId/messages
-router.post('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.post('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId  = req.user!.userId;
   const { chatId } = req.params;
   const { body } = req.body;
@@ -354,10 +354,10 @@ router.post('/:chatId/messages', authMiddleware, async (req: Request, res: Respo
     console.error('[POST /chats/:id/messages]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
 // POST /api/v1/chats/:chatId/typing  — 204 No Content（WebSocket 廣播留後端 TODO）
-router.post('/:chatId/typing', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  router.post('/:chatId/typing', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   const userId  = req.user!.userId;
   const { chatId } = req.params;
 
@@ -375,6 +375,7 @@ router.post('/:chatId/typing', authMiddleware, async (req: Request, res: Respons
     console.error('[POST /chats/:id/typing]', err);
     res.status(500).json(apiError('INTERNAL', 'Internal server error'));
   }
-});
+  });
 
-export default router;
+  return router;
+}

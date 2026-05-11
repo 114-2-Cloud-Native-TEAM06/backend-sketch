@@ -3,9 +3,9 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
 import { parse } from 'url';
-import authRoutes from './routes/auth.js';
-import chatRoutes from './routes/chats.js';
-import userRoutes from './routes/users.js';
+import { createAuthRouter } from './routes/auth.js';
+import { createChatRouter } from './routes/chats.js';
+import { createUserRouter } from './routes/users.js';
 
 interface JwtPayload {
   userId: string;
@@ -18,9 +18,9 @@ const app: Express = express();
 app.use(express.json());
 
 const API_VERSION = process.env.API_VERSION || '1';
-app.use(`/api/v${API_VERSION}/auth`, authRoutes);
-app.use(`/api/v${API_VERSION}/chats`, chatRoutes);
-app.use(`/api/v${API_VERSION}/users`, userRoutes);
+app.use(`/api/v${API_VERSION}/auth`, createAuthRouter());
+app.use(`/api/v${API_VERSION}/chats`, createChatRouter());
+app.use(`/api/v${API_VERSION}/users`, createUserRouter());
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

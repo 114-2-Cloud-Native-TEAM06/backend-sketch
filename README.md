@@ -85,6 +85,48 @@ curl http://localhost:8080/health
 docker compose up -d
 ```
 
+### Run Backend Tests
+
+Run all backend tests with Vitest inside Docker. This starts an isolated
+PostgreSQL test database, applies Prisma migrations, runs unit and integration
+tests, and keeps test data separate from the development database:
+
+```bash
+docker compose run --rm test
+```
+
+The `test` service starts `postgres-test`, generates the Prisma client, applies
+migrations, and then runs the full test suite.
+
+To run only unit tests in Docker:
+
+```bash
+docker compose run --rm test npm run test:unit
+```
+
+Integration tests require a PostgreSQL test database. To run only integration
+tests in Docker:
+
+```bash
+docker compose run --rm test sh -c "npx prisma generate && npx prisma migrate deploy && npm run test:integration"
+```
+
+If Docker uses a stale backend image after Dockerfile or dependency changes, add
+`--build`:
+
+```bash
+docker compose run --rm --build test
+```
+
+If you run scripts directly outside Docker, `npm run test:unit` does not need a
+database, but `npm run test:integration` requires `DATABASE_URL` to point to a
+test database whose name or host contains `test`:
+
+```bash
+npm run test:unit
+NODE_ENV=test DATABASE_URL=postgresql://admin:password@localhost:5432/imdb_test npm run test:integration
+```
+
 ### Visualize Database
 
 Open Prisma Studio to view and manage database records:
