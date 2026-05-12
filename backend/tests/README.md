@@ -11,7 +11,7 @@ This folder owns the backend Vitest suite. Tests are intentionally separated by 
 Run the full backend suite from Docker:
 
 ```sh
-docker compose run --rm test
+docker compose --profile test run --rm test
 ```
 
 The Docker test service generates the Prisma client, applies migrations, and uses an isolated PostgreSQL database (`postgres-test` / `imdb_test`) with `NODE_ENV=test`. Integration tests call `resetDatabase()` before each test and again after the suite finishes. The reset helper refuses to run unless `NODE_ENV=test` and `DATABASE_URL` points to a test database, which prevents accidental cleanup of a development database.

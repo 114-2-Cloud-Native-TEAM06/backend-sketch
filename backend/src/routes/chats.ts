@@ -1,11 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../middleware/auth.js';
-import type { Chat, Message, User, ApiError, CreateChatRequest, ErrorCode } from '../types/api-types.js';
-
-function apiError(code: ErrorCode, message: string): ApiError {
-  return { error: { code, message } };
-}
+import type { Chat, Message, User, CreateChatRequest } from '../types/api-types.js';
+import { AppError } from '../utils/errHandler.js';
 
 function toMessageDto(msg: {
   id: string;
@@ -51,75 +48,62 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
   router.get('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
     const userId = req.user!.userId;
 
-    try {
-      const memberships = await prisma.roomMember.findMany({
-        where: { userId },
-        include: {
-          room: {
-            include: {
-              members: {
-                include: { user: { select: { id: true, displayName: true } } },
-              },
-              messages: {
-                orderBy: { createdAt: 'desc' },
-                take: 1,
-              },
+    const memberships = await prisma.roomMember.findMany({
+      where: { userId },
+      include: {
+        room: {
+          include: {
+            members: {
+              include: { user: { select: { id: true, displayName: true } } },
+            },
+            messages: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
             },
           },
         },
-        orderBy: { room: { lastMessageAt: 'desc' } },
-      });
+      },
+      orderBy: { room: { lastMessageAt: 'desc' } },
+    });
 
-      const chats: Chat[] = memberships.map((m) => {
-        const room = m.room;
-        const otherMember = room.isGroup
-          ? undefined
-          : room.members.find((rm) => rm.userId !== userId)?.user;
-        const lastMsg = room.messages[0];
+    const chats: Chat[] = memberships.map((m) => {
+      const room = m.room;
+      const otherMember = room.isGroup
+        ? undefined
+        : room.members.find((rm) => rm.userId !== userId)?.user;
+      const lastMsg = room.messages[0];
 
-        return {
-          id:           room.id,
-          type:         room.isGroup ? 'group' : 'direct',
-          name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
-          last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
-          unread_count: 0,
-        };
-      });
+      return {
+        id:           room.id,
+        type:         room.isGroup ? 'group' : 'direct',
+        name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
+        last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
+        unread_count: 0,
+      };
+    });
 
-      res.json(chats);
-    } catch (err) {
-      console.error('[GET /chats]', err);
-      res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-    }
+    res.json(chats);
   });
 
-// POST /api/v1/chats  — 建立 direct 或 group chat
+  // POST /api/v1/chats  — 建立 direct 或 group chat
   router.post('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId = req.user!.userId;
-  const { type, name, member_ids } = req.body as CreateChatRequest;
+    const userId = req.user!.userId;
+    const { type, name, member_ids } = req.body as CreateChatRequest;
 
-  if (!type || !member_ids || !Array.isArray(member_ids)) {
-    res.status(400).json(apiError('VALIDATION_FAILED', 'type and member_ids are required'));
-    return;
-  }
+    if (!type || !member_ids || !Array.isArray(member_ids))
+      throw new AppError(400, 'VALIDATION_FAILED', 'type and member_ids are required');
 
-  try {
     if (type === 'direct') {
-      if (member_ids.length !== 1) {
-        res.status(400).json(apiError('VALIDATION_FAILED', 'direct chat requires exactly 1 member_id'));
-        return;
-      }
+      if (member_ids.length !== 1)
+        throw new AppError(400, 'VALIDATION_FAILED', 'direct chat requires exactly 1 member_id');
+
       const rawTarget = member_ids[0];
       const targetUser = await resolveUser(prisma, rawTarget);
-      if (!targetUser) {
-        res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`));
-        return;
-      }
+      if (!targetUser)
+        throw new AppError(422, 'VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`);
 
-      if (targetUser.id === userId) {
-        res.status(400).json(apiError('VALIDATION_FAILED', 'cannot create a direct chat with yourself'));
-        return;
-      }
+      if (targetUser.id === userId)
+        throw new AppError(400, 'VALIDATION_FAILED', 'cannot create a direct chat with yourself');
 
       // 找已存在的 1-1 聊天室（兩人都是成員且只有兩個成員）
       const candidates = await prisma.room.findMany({
@@ -166,23 +150,17 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
     }
 
     if (type === 'group') {
-      if (!name) {
-        res.status(400).json(apiError('VALIDATION_FAILED', 'group chat requires a name'));
-        return;
-      }
-      if (!member_ids.length) {
-        res.status(400).json(apiError('VALIDATION_FAILED', 'group chat requires at least 1 member_id'));
-        return;
-      }
+      if (!name)
+        throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires a name');
+      if (!member_ids.length)
+        throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires at least 1 member_id');
 
       const resolvedMembers = await Promise.all(member_ids.map((id) => resolveUser(prisma, id)));
       const badIdx = resolvedMembers.findIndex((u) => u === null);
-      if (badIdx !== -1) {
-        res.status(422).json(apiError('VALIDATION_FAILED', `member_ids[${badIdx}]: user "${member_ids[badIdx]}" not found`));
-        return;
-      }
-      const resolvedIds = resolvedMembers.map((u) => u!.id);
+      if (badIdx !== -1)
+        throw new AppError(422, 'VALIDATION_FAILED', `member_ids[${badIdx}]: user "${member_ids[badIdx]}" not found`);
 
+      const resolvedIds = resolvedMembers.map((u) => u!.id);
       const allIds = [...new Set([userId, ...resolvedIds])];
       const room = await prisma.room.create({
         data: {
@@ -201,19 +179,14 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       return;
     }
 
-    res.status(400).json(apiError('VALIDATION_FAILED', 'type must be "direct" or "group"'));
-  } catch (err) {
-    console.error('[POST /chats]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
+    throw new AppError(400, 'VALIDATION_FAILED', 'type must be "direct" or "group"');
   });
 
-// GET /api/v1/chats/:chatId
+  // GET /api/v1/chats/:chatId
   router.get('/:chatId', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId  = req.user!.userId;
-  const { chatId } = req.params;
+    const userId  = req.user!.userId;
+    const { chatId } = req.params;
 
-  try {
     const room = await prisma.room.findFirst({
       where: { id: chatId, members: { some: { userId } } },
       include: {
@@ -222,10 +195,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       },
     });
 
-    if (!room) {
-      res.status(404).json(apiError('NOT_FOUND', 'Chat not found'));
-      return;
-    }
+    if (!room) throw new AppError(404, 'NOT_FOUND', 'Chat not found');
 
     const otherMember = room.isGroup
       ? undefined
@@ -239,18 +209,13 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
       unread_count: 0,
     } satisfies Chat);
-  } catch (err) {
-    console.error('[GET /chats/:id]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
   });
 
-// GET /api/v1/chats/:chatId/members
+  // GET /api/v1/chats/:chatId/members
   router.get('/:chatId/members', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId  = req.user!.userId;
-  const { chatId } = req.params;
+    const userId  = req.user!.userId;
+    const { chatId } = req.params;
 
-  try {
     const room = await prisma.room.findFirst({
       where: { id: chatId, members: { some: { userId } } },
       include: {
@@ -262,35 +227,24 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       },
     });
 
-    if (!room) {
-      res.status(404).json(apiError('NOT_FOUND', 'Chat not found'));
-      return;
-    }
+    if (!room) throw new AppError(404, 'NOT_FOUND', 'Chat not found');
 
     res.json(room.members.map((m) => toUserDto(m.user)));
-  } catch (err) {
-    console.error('[GET /chats/:id/members]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
   });
 
-// GET /api/v1/chats/:chatId/messages?before_message_id=&limit=50
-// 回傳舊→新倒序（最新在前），前端 prepend 到頂部
+  // GET /api/v1/chats/:chatId/messages?before_message_id=&limit=50
+  // 回傳舊→新倒序（最新在前），前端 prepend 到頂部
   router.get('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId  = req.user!.userId;
-  const { chatId } = req.params;
-  const { before_message_id, limit = '50' } = req.query;
+    const userId  = req.user!.userId;
+    const { chatId } = req.params;
+    const { before_message_id, limit = '50' } = req.query;
 
-  const pageSize = Math.min(Number(limit) || 50, 100);
+    const pageSize = Math.min(Number(limit) || 50, 100);
 
-  try {
     const isMember = await prisma.roomMember.findUnique({
       where: { userId_roomId: { userId, roomId: chatId } },
     });
-    if (!isMember) {
-      res.status(403).json(apiError('FORBIDDEN', 'Not a member of this chat'));
-      return;
-    }
+    if (!isMember) throw new AppError(403, 'FORBIDDEN', 'Not a member of this chat');
 
     // cursor 分頁：找到游標訊息的 createdAt，拿比它更早的
     let cursorCreatedAt: Date | undefined;
@@ -313,31 +267,21 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
     });
 
     res.json(messages.map(toMessageDto));
-  } catch (err) {
-    console.error('[GET /chats/:id/messages]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
   });
 
-// POST /api/v1/chats/:chatId/messages
+  // POST /api/v1/chats/:chatId/messages
   router.post('/:chatId/messages', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId  = req.user!.userId;
-  const { chatId } = req.params;
-  const { body } = req.body;
+    const userId  = req.user!.userId;
+    const { chatId } = req.params;
+    const { body } = req.body;
 
-  if (!body || typeof body !== 'string' || !body.trim()) {
-    res.status(400).json(apiError('VALIDATION_FAILED', 'body is required'));
-    return;
-  }
+    if (!body || typeof body !== 'string' || !body.trim())
+      throw new AppError(400, 'VALIDATION_FAILED', 'body is required');
 
-  try {
     const isMember = await prisma.roomMember.findUnique({
       where: { userId_roomId: { userId, roomId: chatId } },
     });
-    if (!isMember) {
-      res.status(403).json(apiError('FORBIDDEN', 'Not a member of this chat'));
-      return;
-    }
+    if (!isMember) throw new AppError(403, 'FORBIDDEN', 'Not a member of this chat');
 
     const msg = await prisma.message.create({
       data: { content: body.trim(), senderId: userId, roomId: chatId },
@@ -350,31 +294,19 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
     });
 
     res.status(201).json(toMessageDto(msg));
-  } catch (err) {
-    console.error('[POST /chats/:id/messages]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
   });
 
-// POST /api/v1/chats/:chatId/typing  — 204 No Content（WebSocket 廣播留後端 TODO）
+  // POST /api/v1/chats/:chatId/typing  — 204 No Content（WebSocket 廣播留後端 TODO）
   router.post('/:chatId/typing', authMiddleware, async (req: Request, res: Response): Promise<void> => {
-  const userId  = req.user!.userId;
-  const { chatId } = req.params;
+    const userId  = req.user!.userId;
+    const { chatId } = req.params;
 
-  try {
     const isMember = await prisma.roomMember.findUnique({
       where: { userId_roomId: { userId, roomId: chatId } },
     });
-    if (!isMember) {
-      res.status(403).json(apiError('FORBIDDEN', 'Not a member of this chat'));
-      return;
-    }
+    if (!isMember) throw new AppError(403, 'FORBIDDEN', 'Not a member of this chat');
 
     res.status(204).send();
-  } catch (err) {
-    console.error('[POST /chats/:id/typing]', err);
-    res.status(500).json(apiError('INTERNAL', 'Internal server error'));
-  }
   });
 
   return router;

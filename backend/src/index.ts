@@ -1,3 +1,4 @@
+import 'express-async-errors';
 import express, { Express } from 'express';
 import { createServer, Server } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -6,6 +7,7 @@ import { fileURLToPath, parse } from 'url';
 import { createAuthRouter } from './routes/auth.js';
 import { createChatRouter } from './routes/chats.js';
 import { createUserRouter } from './routes/users.js';
+import { errorMiddleware } from './utils/errHandler.js';
 
 interface JwtPayload {
   userId: string;
@@ -26,6 +28,8 @@ export function createRestApp(): Express {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  app.use(errorMiddleware);
 
   return app;
 }

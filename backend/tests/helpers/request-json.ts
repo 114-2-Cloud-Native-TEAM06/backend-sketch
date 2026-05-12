@@ -1,5 +1,6 @@
 import express, { Router } from 'express';
 import { Server } from 'http';
+import { errorMiddleware } from '../../src/utils/errHandler.js';
 
 export interface TestResponse<T = unknown> {
   status: number;
@@ -14,6 +15,7 @@ export async function requestJson<T = unknown>(
   const app = express();
   app.use(express.json());
   app.use(router);
+  app.use(errorMiddleware);
 
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, () => resolve(listener));

@@ -61,7 +61,7 @@ No other local dependencies are required. Node.js, PostgreSQL, and Redis all run
 
 **Start the full stack:**
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 **First-time database setup:**
@@ -92,7 +92,7 @@ PostgreSQL test database, applies Prisma migrations, runs unit and integration
 tests, and keeps test data separate from the development database:
 
 ```bash
-docker compose run --rm test
+docker compose --profile test run --rm test
 ```
 
 The `test` service starts `postgres-test`, generates the Prisma client, applies
