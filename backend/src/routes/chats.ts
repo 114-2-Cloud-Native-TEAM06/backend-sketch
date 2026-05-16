@@ -1,25 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../middleware/auth.js';
-import type { Chat, Message, User, CreateChatRequest } from '../types/api-types.js';
+import type { Chat, User, CreateChatRequest } from '../types/api-types.js';
 import { AppError } from '../utils/errHandler.js';
-
-function toMessageDto(msg: {
-  id: string;
-  content: string;
-  createdAt: Date;
-  senderId: string;
-  roomId: string;
-}): Message {
-  return {
-    id:         msg.id,
-    chat_id:    msg.roomId,
-    sender_id:  msg.senderId,
-    type:       'TEXT',
-    body:       msg.content,
-    created_at: msg.createdAt.toISOString(),
-  };
-}
+import { createMessage, toMessageDto } from '../services/messageService.js';
 
 function toUserDto(row: {
   id: string; username: string; email: string; displayName: string; createdAt: Date;
@@ -275,25 +259,8 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
     const { chatId } = req.params;
     const { body } = req.body;
 
-    if (!body || typeof body !== 'string' || !body.trim())
-      throw new AppError(400, 'VALIDATION_FAILED', 'body is required');
-
-    const isMember = await prisma.roomMember.findUnique({
-      where: { userId_roomId: { userId, roomId: chatId } },
-    });
-    if (!isMember) throw new AppError(403, 'FORBIDDEN', 'Not a member of this chat');
-
-    const msg = await prisma.message.create({
-      data: { content: body.trim(), senderId: userId, roomId: chatId },
-      select: { id: true, content: true, createdAt: true, senderId: true, roomId: true },
-    });
-
-    await prisma.room.update({
-      where: { id: chatId },
-      data: { lastMessageAt: msg.createdAt },
-    });
-
-    res.status(201).json(toMessageDto(msg));
+    const msg = await createMessage(prisma, { senderId: userId, chatId, body });
+    res.status(201).json(msg);
   });
 
   // POST /api/v1/chats/:chatId/typing  — 204 No Content（WebSocket 廣播留後端 TODO）

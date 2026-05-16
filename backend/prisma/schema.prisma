@@ -50,6 +50,7 @@ model Message {
   id        String   @id @default(uuid())
   content   String
   createdAt DateTime @default(now())
+  requestId String?
 
   senderId  String
   roomId    String
@@ -58,4 +59,5 @@ model Message {
   room   Room @relation(fields: [roomId], references: [id])
 
   @@index([roomId, createdAt])            // 查歷史訊息的查詢會用到
+  @@unique([senderId, requestId])
 }
