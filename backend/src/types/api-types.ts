@@ -22,7 +22,7 @@ export type MessageId = string;
 
 // ─── Core entities (REST + WS payloads) ─────────────────────────────────
 
-export type MessageType = "TEXT" | "IMAGE" | "FILE" | "SYSTEM";
+export type MessageType = 'TEXT' | 'IMAGE' | 'FILE' | 'SYSTEM';
 
 export interface Message {
   id:         MessageId;
@@ -35,7 +35,7 @@ export interface Message {
 
 export interface Chat {
   id:            ChatId;
-  type:          "direct" | "group";
+  type:          'direct' | 'group';
   name:          string;
   avatar_url?:   string;
   last_message?: Message;
@@ -55,7 +55,7 @@ export interface User {
 
 export interface SendMessageRequest {
   request_id: Ulid;
-  type:       Exclude<MessageType, "SYSTEM">;
+  type:       Exclude<MessageType, 'SYSTEM'>;
   body:       string;
 }
 
@@ -82,14 +82,14 @@ export interface UpdateProfileRequest {
 }
 
 export interface CreateChatRequest {
-  type:       "direct" | "group";
+  type:       'direct' | 'group';
   name?:      string;
   member_ids: UserId[];
 }
 
 export interface RegisterDeviceRequest {
   token:    string;
-  platform: "FCM" | "APNS";
+  platform: 'FCM' | 'APNS';
 }
 
 export interface NotificationPreferences {
@@ -97,7 +97,7 @@ export interface NotificationPreferences {
   push_enabled:      boolean;
   email_enabled:     boolean;
   mentions_only:     boolean;
-  quiet_hours_tz:    string;     // e.g. "Asia/Taipei"
+  quiet_hours_tz:    string;     // e.g. 'Asia/Taipei'
   quiet_hours_start: number;     // 0–23
   quiet_hours_end:   number;
 }
@@ -105,25 +105,25 @@ export interface NotificationPreferences {
 // ─── WebSocket frames ───────────────────────────────────────────────────
 
 export type WsClientFrame =
-  | { type: "send";    request_id: Ulid; chat_id: ChatId; body: string; msg_type?: Exclude<MessageType, "SYSTEM"> }
-  | { type: "typing";  chat_id: ChatId; is_typing: boolean }
-  | { type: "ack";     message_ids: MessageId[]; status: "DELIVERED" | "READ" }
-  | { type: "ping" };
+  | { type: 'send';    request_id: Ulid; chat_id: ChatId; body: string; msg_type?: Exclude<MessageType, 'SYSTEM'> }
+  | { type: 'typing';  chat_id: ChatId; is_typing: boolean }
+  | { type: 'ack';     message_ids: MessageId[]; status: 'DELIVERED' | 'READ' }
+  | { type: 'ping' };
 
 export type WsServerFrame =
-  | { type: "ack";      request_id: Ulid; message_id: MessageId; persisted_at: Iso8601 }
-  | { type: "msg";      message: Message }
-  | { type: "typing";   chat_id: ChatId; user_id: UserId; is_typing: boolean }
-  | { type: "presence"; user_id: UserId; online: boolean }
-  | { type: "error";    reason: WsErrorReason; detail?: string }
-  | { type: "pong" };
+  | { type: 'ack';      request_id: Ulid; message_id: MessageId; persisted_at: Iso8601 }
+  | { type: 'msg';      message: Message }
+  | { type: 'typing';   chat_id: ChatId; user_id: UserId; is_typing: boolean }
+  | { type: 'presence'; user_id: UserId; online: boolean }
+  | { type: 'error';    reason: WsErrorReason; detail?: string }
+  | { type: 'pong' };
 
 export type WsErrorReason =
-  | "unknown_op"
-  | "rate_limited"
-  | "forbidden"
-  | "validation_failed"
-  | "auth_expired";
+  | 'unknown_op'
+  | 'rate_limited'
+  | 'forbidden'
+  | 'validation_failed'
+  | 'auth_expired';
 
 // Re-exported alias for ergonomic imports in hooks/components.
 export type WsFrame = WsClientFrame | WsServerFrame;
@@ -131,13 +131,13 @@ export type WsFrame = WsClientFrame | WsServerFrame;
 // ─── Error envelope (REST + gRPC) ───────────────────────────────────────
 
 export type ErrorCode =
-  | "VALIDATION_FAILED"
-  | "AUTH_REQUIRED"
-  | "FORBIDDEN"
-  | "NOT_FOUND"
-  | "CONFLICT"
-  | "RATE_LIMITED"
-  | "INTERNAL";
+  | 'VALIDATION_FAILED'
+  | 'AUTH_REQUIRED'
+  | 'FORBIDDEN'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'RATE_LIMITED'
+  | 'INTERNAL';
 
 export interface ApiError {
   error: {

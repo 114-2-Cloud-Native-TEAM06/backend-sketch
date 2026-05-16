@@ -12,7 +12,9 @@
     "start": "node --loader ts-node/esm src/index.ts",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "prisma:dev": "docker compose exec app npx prisma migrate dev",
+    "prisma:deploy": "docker compose exec app npx prisma migrate deploy"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
