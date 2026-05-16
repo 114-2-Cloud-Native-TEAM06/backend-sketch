@@ -212,14 +212,16 @@ test('send broadcasts msg to same-room clients only', async () => {
 
   // Act
   sendJson(aliceWs, { type: 'send', request_id: 'req-broadcast', chat_id: room.id, body: 'fan out' });
-  const bobFrame = await waitForJsonFrame<WsServerFrame>(
-    bobWs,
-    (frame) => frame.type === 'msg' && frame.message.body === 'fan out',
-  );
-  await waitForJsonFrame<WsServerFrame>(
-    aliceWs,
-    (frame) => frame.type === 'ack' && frame.request_id === 'req-broadcast',
-  );
+  const [bobFrame] = await Promise.all([
+    waitForJsonFrame<WsServerFrame>(
+      bobWs,
+      (frame) => frame.type === 'msg' && frame.message.body === 'fan out',
+    ),
+    waitForJsonFrame<WsServerFrame>(
+      aliceWs,
+      (frame) => frame.type === 'ack' && frame.request_id === 'req-broadcast',
+    ),
+  ]);
 
   // Assert
   expect(bobFrame).toMatchObject({

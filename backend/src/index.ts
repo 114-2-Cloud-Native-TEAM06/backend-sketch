@@ -250,7 +250,7 @@ export function createWebSocketServer(
       removeSocketFromRooms(state);
       clientStates.delete(ws);
       if (!hasOpenSocketForUser(user.userId)) broadcastPresence(state, false);
-      console.log('ws disconnected:', user.userId);
+      // console.log('ws disconnected:', user.userId);
     });
 
     void (async () => {
@@ -261,7 +261,7 @@ export function createWebSocketServer(
       if (ws.readyState !== WebSocket.OPEN || clientStates.get(ws) !== state) return;
       for (const membership of memberships) addSocketToRoom(state, membership.roomId);
 
-      console.log('ws connected:', user.userId);
+      // console.log('ws connected:', user.userId);
       if (!wasOnline) broadcastPresence(state, true);
     })().catch((err) => {
       console.error('ws connection setup failed:', err);
