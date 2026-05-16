@@ -10,11 +10,9 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --config vitest.unit.config.ts --coverage && vitest run --config vitest.integration.config.ts --coverage",
     "start": "node --loader ts-node/esm src/index.ts",
-    "db:migrate": "prisma migrate dev",
-    "db:generate": "prisma generate",
-    "db:studio": "prisma studio",
-    "prisma:dev": "docker compose exec app npx prisma migrate dev",
-    "prisma:deploy": "docker compose exec app npx prisma migrate deploy"
+    "db:init": "docker compose exec app npx prisma migrate dev --name init",
+    "db:studio": "docker compose exec app npx prisma studio --hostname 0.0.0.0",
+    "db:setup": "docker compose exec app npx prisma migrate deploy && docker compose exec app npx prisma generate && docker compose restart app"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
