@@ -183,6 +183,23 @@ export function createWebSocketServer(
       if (ws.readyState !== WebSocket.OPEN || presenceStore.getClientState(ws) !== state) return;
       for (const membership of memberships) presenceStore.addSocketToRoom(state, membership.roomId);
 
+      // Send presence:true for every already-online user visible in shared rooms
+      const onlineUserIds = new Set<string>();
+      for (const roomId of state.roomIds) {
+        const sockets = presenceStore.getRoomSockets(roomId);
+        if (!sockets) continue;
+        for (const socket of sockets) {
+          const recipient = presenceStore.getClientState(socket);
+          if (recipient && recipient.user.userId !== user.userId) {
+            onlineUserIds.add(recipient.user.userId);
+          }
+        }
+      }
+      for (const onlineUserId of onlineUserIds) {
+        sendJson(ws, { type: 'presence', user_id: onlineUserId, online: true });
+      }
+
+      // console.log('ws connected:', user.userId);
       if (!wasOnline) broadcastPresence(state, true);
     })().catch((err) => {
       console.error('ws connection setup failed:', err);
