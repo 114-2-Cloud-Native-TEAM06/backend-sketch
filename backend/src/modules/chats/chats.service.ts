@@ -59,7 +59,7 @@ function toChatDto(room: {
   id: string;
   isGroup: boolean;
   name: string | null;
-  members: Array<{ userId: string; user?: { id: string; displayName: string } }>;
+  members: Array<{ userId: string; user: { id: string; displayName: string } }>;
   messages: MessageRow[];
 }, currentUserId: string): Chat {
   const otherMember = room.isGroup
