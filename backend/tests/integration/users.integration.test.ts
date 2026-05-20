@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { afterAll, beforeEach, expect, test } from 'vitest';
-import { createUserRouter } from '../../src/routes/users.js';
+import { createUserRouter } from '../../services/user-service/src/modules/users/users.routes.js';
 import { requestJson } from '../helpers/request-json.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
 

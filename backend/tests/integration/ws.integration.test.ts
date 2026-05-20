@@ -3,7 +3,7 @@ import type { AddressInfo } from 'net';
 import jwt from 'jsonwebtoken';
 import WebSocket from 'ws';
 import { afterAll, afterEach, beforeEach, expect, test } from 'vitest';
-import { startWebSocketServer } from '../../src/index.js';
+import { startWebSocketServer } from '../../services/realtime-service/src/modules/realtime/realtime.server.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
 import {
   connectWs,
@@ -13,7 +13,7 @@ import {
   waitForJsonFrame,
   waitForJsonMessage,
 } from '../helpers/ws-client.js';
-import type { WsServerFrame } from '../../src/types/api-types.js';
+import type { WsServerFrame } from '../../packages/shared-types/src/api-types.js';
 
 process.env.JWT_SECRET ??= 'unit-test-secret';
 

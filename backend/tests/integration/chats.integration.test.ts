@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { createChatRouter } from '../../src/routes/chats.js';
+import { createChatRouter } from '../../services/chat-service/src/modules/chats/chats.routes.js';
 import { requestJson } from '../helpers/request-json.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
 

@@ -1,6 +1,6 @@
-import express, { Router } from 'express';
+import express, { Express, Router } from 'express';
 import { Server } from 'http';
-import { errorMiddleware } from '../../src/utils/errHandler.js';
+import { errorMiddleware } from '../../packages/shared-errors/src/error-middleware.js';
 
 export interface TestResponse<T = unknown> {
   status: number;
@@ -8,7 +8,7 @@ export interface TestResponse<T = unknown> {
 }
 
 export async function requestJson<T = unknown>(
-  router: Router,
+  router: Router | Express,
   path: string,
   init: RequestInit = {},
 ): Promise<TestResponse<T>> {

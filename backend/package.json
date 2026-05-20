@@ -4,15 +4,20 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "nodemon --ext ts,js,json --exec tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "dev:all": "tsx watch src/index.ts",
+    "dev:chat": "tsx watch services/chat-service/src/main.ts",
+    "dev:user": "tsx watch services/user-service/src/main.ts",
+    "dev:realtime": "tsx watch services/realtime-service/src/main.ts",
+    "dev:notification": "tsx watch services/notification-service/src/main.ts",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --config vitest.unit.config.ts --coverage && vitest run --config vitest.integration.config.ts --coverage",
     "start": "node --loader ts-node/esm src/index.ts",
-    "db:init": "docker compose exec app npx prisma migrate dev --name init",
-    "db:studio": "docker compose exec app npx prisma studio --hostname 0.0.0.0",
-    "db:setup": "docker compose exec app npx prisma migrate deploy && docker compose exec app npx prisma generate && docker compose restart app"
+    "db:init": "docker compose exec user-service npx prisma migrate dev --name init",
+    "db:studio": "docker compose exec user-service npx prisma studio --hostname 0.0.0.0",
+    "db:setup": "docker compose exec user-service npx prisma migrate deploy && docker compose exec user-service npx prisma generate && docker compose restart user-service chat-service realtime-service notification-service"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",

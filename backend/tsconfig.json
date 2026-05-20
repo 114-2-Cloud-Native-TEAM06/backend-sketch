@@ -5,7 +5,7 @@
     "lib": ["ES2020"],
     "moduleResolution": "NodeNext",
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -16,6 +16,6 @@
     "declarationMap": true,
     "sourceMap": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "services/**/*", "packages/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]
 }
