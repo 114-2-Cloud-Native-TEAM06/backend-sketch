@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { createAuthRouter } from '../../../src/routes/auth.js';
-import { requestJson } from '../../helpers/request-json.js';
+import { createAuthRouter } from '../auth.js';
+import { requestJson } from '../../../tests/helpers/request-json.js';
 
 process.env.JWT_SECRET = 'unit-test-secret';
 
@@ -64,7 +64,7 @@ test('register rejects invalid username format before querying the database', as
   expect(res.body).toEqual({
     error: {
       code: 'VALIDATION_FAILED',
-      message: 'Username may only contain letters, numbers, _ and - (3–32 chars)',
+      message: 'username must be 3-32 characters and contain only letters, numbers, "_" or "-"',
     },
   });
 });
@@ -98,7 +98,7 @@ test('register rejects extreme length username before querying the database', as
   expect(res.body).toEqual({
     error: {
       code: 'VALIDATION_FAILED',
-      message: 'Username may only contain letters, numbers, _ and - (3–32 chars)',
+      message: 'username must be 3-32 characters and contain only letters, numbers, "_" or "-"',
     },
   });
 });
@@ -122,6 +122,40 @@ test('register rejects null password values before persistence', async () => {
       username: 'alice',
       email: 'not-an-email',
       password: null,
+      display_name: 'Alice',
+    }),
+  });
+
+  // Assert
+  expect(res.status).toBe(400);
+  expect(createdUser).toBe(false);
+  expect(res.body).toEqual({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message: 'username, email, password, display_name are required',
+    },
+  });
+});
+
+test('register rejects non-string password values before persistence', async () => {
+  // Arrange
+  let createdUser = false;
+  const prisma = {
+    user: {
+      create: async () => {
+        createdUser = true;
+        return {};
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 12345678,
       display_name: 'Alice',
     }),
   });
@@ -166,7 +200,7 @@ test('register rejects invalid email format before persistence', async () => {
   expect(res.body).toEqual({
     error: {
       code: 'VALIDATION_FAILED',
-      message: 'Invalid email format',
+      message: 'email must be a valid email address',
     },
   });
 });
@@ -200,7 +234,7 @@ test('register rejects short passwords before persistence', async () => {
   expect(res.body).toEqual({
     error: {
       code: 'VALIDATION_FAILED',
-      message: 'Password must be at least 8 characters',
+      message: 'password must be at least 8 characters',
     },
   });
 });
@@ -285,7 +319,7 @@ test('register returns conflict without exposing existing password data', async 
   expect(res.body).toEqual({
     error: {
       code: 'CONFLICT',
-      message: 'Username already taken',
+      message: 'username already taken',
     },
   });
 });
@@ -356,5 +390,150 @@ test('login waits for asynchronous password comparison before returning success'
   expect(jwt.verify(res.body.token, process.env.JWT_SECRET!)).toMatchObject({
     userId: 'user-1',
     username: 'alice',
+  });
+});
+
+test('refresh returns a token for a valid bearer token and current persisted user', async () => {
+  // Arrange
+  const token = jwt.sign({ userId: 'user-1', username: 'stale-alice' }, process.env.JWT_SECRET!);
+  let capturedUserId = '';
+  const prisma = {
+    user: {
+      findUnique: async (args: { where: { id: string } }) => {
+        capturedUserId = args.where.id;
+        return {
+          id: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          displayName: 'Alice',
+          createdAt,
+        };
+      },
+      findFirst: async () => {
+        throw new Error('user conflict lookup should not be called');
+      },
+      create: async () => {
+        throw new Error('user create should not be called');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson<{ token: string }>(createAuthRouter(prisma as never), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(capturedUserId).toBe('user-1');
+  expect(Object.keys(res.body)).toEqual(['token']);
+  expect(jwt.verify(res.body.token, process.env.JWT_SECRET!)).toMatchObject({
+    userId: 'user-1',
+    username: 'alice',
+  });
+});
+
+test('refresh rejects signed tokens with incomplete auth payload before persistence', async () => {
+  // Arrange
+  const token = jwt.sign({ username: 'alice' }, process.env.JWT_SECRET!);
+  const prisma = {
+    user: {
+      findUnique: async () => {
+        throw new Error('user lookup should not be called');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Invalid token payload',
+    },
+  });
+});
+
+test('refresh rejects tokens for users that no longer exist', async () => {
+  // Arrange
+  const token = jwt.sign({ userId: 'deleted-user', username: 'alice' }, process.env.JWT_SECRET!);
+  const prisma = {
+    user: {
+      findUnique: async () => null,
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({
+    error: {
+      code: 'NOT_FOUND',
+      message: 'User not found',
+    },
+  });
+});
+
+test('refresh rejects missing bearer token', async () => {
+  // Arrange
+  const prisma = {
+    user: {
+      findUnique: async () => {
+        throw new Error('user lookup should not be called');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/refresh', {
+    method: 'POST',
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Missing or invalid token',
+    },
+  });
+});
+
+test('refresh rejects tampered bearer tokens', async () => {
+  // Arrange
+  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+  const prisma = {
+    user: {
+      findUnique: async () => {
+        throw new Error('user lookup should not be called');
+      },
+    },
+  };
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma as never), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Token expired or invalid',
+    },
   });
 });

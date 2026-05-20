@@ -18,7 +18,7 @@ export default defineConfig({
     },
     environment: 'node',
     fileParallelism: false,
-    include: ['tests/integration/**/*.test.ts'],
+    include: ['tests/integration/**/*.integration.test.ts'],
     maxConcurrency: 1,
     setupFiles: ['./tests/helpers/integration-env.cjs'],
   },

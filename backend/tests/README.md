@@ -1,10 +1,10 @@
 # Backend Tests
 
-This folder owns the backend Vitest suite. Tests are intentionally separated by level:
+The backend Vitest suite is intentionally separated by level:
 
-- `unit/`: fast tests with mocked Prisma clients. These validate route and middleware behavior without a database.
-- `integration/`: workflow tests that use a real PostgreSQL test database through Prisma.
-- `helpers/`: shared test utilities for HTTP requests and database reset/disconnect logic.
+- `src/**/__tests__/*.unit.test.ts`: fast tests with mocked Prisma clients. These validate route and middleware behavior without a database.
+- `tests/integration/`: workflow tests that use a real PostgreSQL test database through Prisma.
+- `tests/helpers/`: shared test utilities for HTTP requests and database reset/disconnect logic.
 
 ## Running Tests
 
@@ -71,12 +71,13 @@ All unit tests are written in AAA style (`Arrange`, `Act`, `Assert`) and cover:
 
 ### Auth Routes
 
-File: `unit/routes/auth.test.ts`
+File: `src/routes/__tests__/auth.unit.test.ts`
 
 Covered APIs:
 
 - `POST /register`
 - `POST /login`
+- `POST /refresh`
 
 Covered behavior and boundary conditions:
 
@@ -91,10 +92,13 @@ Covered behavior and boundary conditions:
 - Rejects login when the password does not match the stored password hash.
 - Returns `401 AUTH_REQUIRED` for invalid login credentials.
 - Waits for asynchronous user lookup and password comparison before returning successful login.
+- Refreshes a valid bearer token after loading the current persisted user.
+- Returns only `{ token }` from refresh.
+- Rejects incomplete, missing, tampered, or deleted-user refresh bearer tokens.
 
 ### Chat Routes
 
-File: `unit/routes/chats.test.ts`
+File: `src/routes/__tests__/chats.unit.test.ts`
 
 Covered APIs:
 
@@ -122,7 +126,7 @@ Covered behavior and boundary conditions:
 
 ### User Routes
 
-File: `unit/routes/users.test.ts`
+File: `src/routes/__tests__/users.unit.test.ts`
 
 Covered APIs:
 
@@ -141,7 +145,7 @@ Covered behavior and boundary conditions:
 
 ### Auth Middleware
 
-File: `unit/middleware/auth.test.ts`
+File: `src/middleware/__tests__/auth.unit.test.ts`
 
 Covered behavior and boundary conditions:
 
@@ -165,7 +169,7 @@ All integration tests are written in AAA style (`Arrange`, `Act`, `Assert`) and 
 
 ### Auth Workflows
 
-File: `integration/auth.integration.test.ts`
+File: `tests/integration/auth.integration.test.ts`
 
 Covered workflows:
 
@@ -177,11 +181,14 @@ Covered workflows:
 - Persist special characters in `display_name` while keeping password hashing intact.
 - Register a user, then authenticate the same user through `POST /login`.
 - Verify successful login returns the expected user DTO and a token string.
+- Refresh a valid JWT through `POST /refresh`.
+- Verify the refreshed JWT keeps the persisted user id and username.
+- Verify missing, tampered, or deleted-user refresh tokens are rejected.
 - Verify invalid login rejects without leaking password details.
 
 ### Chat Workflows
 
-File: `integration/chats.integration.test.ts`
+File: `tests/integration/chats.integration.test.ts`
 
 Covered workflows:
 
@@ -205,7 +212,7 @@ Covered workflows:
 
 ### User Workflows
 
-File: `integration/users.integration.test.ts`
+File: `tests/integration/users.integration.test.ts`
 
 Covered workflows:
 
@@ -218,7 +225,7 @@ Covered workflows:
 
 ### WebSocket Workflows
 
-File: `integration/ws.integration.test.ts`
+File: `tests/integration/ws.integration.test.ts`
 
 Covered workflows:
 
@@ -229,7 +236,7 @@ Covered workflows:
 
 ### REST App Workflows
 
-File: `integration/rest-app.integration.test.ts`
+File: `tests/integration/rest-app.integration.test.ts`
 
 Covered workflows:
 

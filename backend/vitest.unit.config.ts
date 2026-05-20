@@ -16,7 +16,7 @@ export default defineConfig({
       },
     },
     environment: 'node',
-    include: ['tests/unit/**/*.test.ts'],
+    include: ['src/**/*.unit.test.ts'],
     setupFiles: ['./tests/helpers/integration-env.cjs'],
   },
 });

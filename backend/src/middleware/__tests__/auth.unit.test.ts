@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import authMiddleware from '../../../src/middleware/auth.js';
-import { requestJson } from '../../helpers/request-json.js';
+import authMiddleware from '../auth.js';
+import { requestJson } from '../../../tests/helpers/request-json.js';
 
 process.env.JWT_SECRET = 'unit-test-secret';
 

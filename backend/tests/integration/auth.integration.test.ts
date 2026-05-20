@@ -76,7 +76,7 @@ test('register rejects duplicate username and leaves only one persisted user', a
   expect(res.body).toEqual({
     error: {
       code: 'CONFLICT',
-      message: 'Username already taken',
+      message: 'username already taken',
     },
   });
   expect(users).toHaveLength(1);
@@ -131,6 +131,110 @@ test('login authenticates a user created in PostgreSQL', async () => {
   expect(res.status).toBe(200);
   expect(res.body.user.username).toBe('alice');
   expect(typeof res.body.token).toBe('string');
+});
+
+test('refresh exchanges a valid jwt for a new valid token', async () => {
+  // Arrange
+  const registerRes = await requestJson<{ token: string }>(createAuthRouter(prisma), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'password123',
+      display_name: 'Alice',
+    }),
+  });
+  const row = await prisma.user.findUniqueOrThrow({ where: { email: 'alice@example.com' } });
+
+  // Act
+  const res = await requestJson<{ token: string }>(createAuthRouter(prisma), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${registerRes.body.token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(Object.keys(res.body)).toEqual(['token']);
+  const tokenPayload = jwt.verify(res.body.token, process.env.JWT_SECRET!) as { userId: string; username: string };
+  expect(tokenPayload.userId).toBe(row.id);
+  expect(tokenPayload.username).toBe('alice');
+});
+
+test('refresh rejects tokens whose user no longer exists', async () => {
+  // Arrange
+  const registerRes = await requestJson<{ token: string }>(createAuthRouter(prisma), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'password123',
+      display_name: 'Alice',
+    }),
+  });
+  const row = await prisma.user.findUniqueOrThrow({ where: { email: 'alice@example.com' } });
+  await prisma.user.delete({ where: { id: row.id } });
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${registerRes.body.token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(404);
+  expect(res.body).toEqual({
+    error: {
+      code: 'NOT_FOUND',
+      message: 'User not found',
+    },
+  });
+});
+
+test('refresh rejects requests without a bearer token', async () => {
+  // Arrange
+  await requestJson(createAuthRouter(prisma), '/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: 'alice',
+      email: 'alice@example.com',
+      password: 'password123',
+      display_name: 'Alice',
+    }),
+  });
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma), '/refresh', {
+    method: 'POST',
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Missing or invalid token',
+    },
+  });
+});
+
+test('refresh rejects tampered bearer tokens', async () => {
+  // Arrange
+  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+
+  // Act
+  const res = await requestJson(createAuthRouter(prisma), '/refresh', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+  // Assert
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({
+    error: {
+      code: 'AUTH_REQUIRED',
+      message: 'Token expired or invalid',
+    },
+  });
 });
 
 test('login rejects an invalid password without leaking stored password details', async () => {

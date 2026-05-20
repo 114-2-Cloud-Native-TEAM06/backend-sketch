@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { createUserRouter } from '../../../src/routes/users.js';
-import { requestJson } from '../../helpers/request-json.js';
+import { createUserRouter } from '../users.js';
+import { requestJson } from '../../../tests/helpers/request-json.js';
 
 process.env.JWT_SECRET = 'unit-test-secret';
 
