@@ -37,6 +37,7 @@ export interface Chat {
   id:            ChatId;
   type:          'direct' | 'group';
   name:          string;
+  member_ids:    UserId[];
   avatar_url?:   string;
   last_message?: Message;
   unread_count:  number;

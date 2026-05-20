@@ -44,6 +44,7 @@ test('POST / creates a direct chat with the current user and resolved target use
     id: 'room-1',
     type: 'direct',
     name: 'Bob',
+    member_ids: ['user-1', 'user-2'],
     unread_count: 0,
   });
   expect(createdMembers).toEqual([{ userId: 'user-1' }, { userId: 'user-2' }]);

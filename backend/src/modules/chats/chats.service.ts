@@ -71,6 +71,7 @@ function toChatDto(room: {
     id:           room.id,
     type:         room.isGroup ? 'group' : 'direct',
     name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
+    member_ids:   room.members.map((member) => member.userId),
     last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
     unread_count: 0,
   };
@@ -114,6 +115,7 @@ export async function createChat(
           id:           existing.id,
           type:         'direct',
           name:         targetUser.displayName,
+          member_ids:   existing.members.map((m) => m.userId),
           last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
           unread_count: 0,
         },
@@ -127,6 +129,7 @@ export async function createChat(
         id:           room.id,
         type:         'direct',
         name:         targetUser.displayName,
+        member_ids:   [userId, targetUser.id],
         unread_count: 0,
       },
     };
@@ -153,6 +156,7 @@ export async function createChat(
         id:           room.id,
         type:         'group',
         name:         room.name ?? name,
+        member_ids:   allIds,
         unread_count: 0,
       },
     };

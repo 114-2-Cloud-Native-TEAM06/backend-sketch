@@ -61,6 +61,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         id:           room.id,
         type:         room.isGroup ? 'group' : 'direct',
         name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
+        member_ids:   room.members.map((rm) => rm.userId),
         last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
         unread_count: 0,
       };
@@ -111,6 +112,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
           id:           existing.id,
           type:         'direct',
           name:         targetUser.displayName,
+          member_ids:   existing.members.map((m) => m.userId),
           last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
           unread_count: 0,
         } satisfies Chat);
@@ -128,6 +130,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         id:           room.id,
         type:         'direct',
         name:         targetUser.displayName,
+        member_ids:   [userId, targetUser.id],
         unread_count: 0,
       } satisfies Chat);
       return;
@@ -158,6 +161,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         id:           room.id,
         type:         'group',
         name:         room.name ?? name,
+        member_ids:   allIds,
         unread_count: 0,
       } satisfies Chat);
       return;
@@ -190,6 +194,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       id:           room.id,
       type:         room.isGroup ? 'group' : 'direct',
       name:         room.isGroup ? (room.name ?? 'Group Chat') : (otherMember?.displayName ?? 'Unknown'),
+      member_ids:   room.members.map((m) => m.userId),
       last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
       unread_count: 0,
     } satisfies Chat);
