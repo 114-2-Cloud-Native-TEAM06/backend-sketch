@@ -59,6 +59,7 @@ function toChatDto(room: {
   id: string;
   isGroup: boolean;
   name: string | null;
+  createdAt: Date;
   members: Array<{ userId: string; user: { id: string; displayName: string } }>;
   messages: MessageRow[];
 }, currentUserId: string): Chat {
@@ -74,6 +75,7 @@ function toChatDto(room: {
     member_ids:   room.members.map((member) => member.userId),
     last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
     unread_count: 0,
+    created_at:   room.createdAt.toISOString(),
   };
 }
 
@@ -118,6 +120,7 @@ export async function createChat(
           member_ids:   existing.members.map((m) => m.userId),
           last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
           unread_count: 0,
+          created_at:   existing.createdAt.toISOString(),
         },
       };
     }
@@ -131,6 +134,7 @@ export async function createChat(
         name:         targetUser.displayName,
         member_ids:   [userId, targetUser.id],
         unread_count: 0,
+        created_at:   room.createdAt.toISOString(),
       },
     };
   }
@@ -158,6 +162,7 @@ export async function createChat(
         name:         room.name ?? name,
         member_ids:   allIds,
         unread_count: 0,
+        created_at:   room.createdAt.toISOString(),
       },
     };
   }

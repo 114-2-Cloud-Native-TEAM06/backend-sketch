@@ -41,6 +41,7 @@ export interface Chat {
   avatar_url?:   string;
   last_message?: Message;
   unread_count:  number;
+  created_at:    Iso8601;
 }
 
 export interface User {

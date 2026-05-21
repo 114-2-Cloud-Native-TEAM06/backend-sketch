@@ -22,7 +22,7 @@ test('POST / creates a direct chat with the current user and resolved target use
       findMany: async () => [],
       create: async (args: { data: { members: { create: Array<{ userId: string }> } } }) => {
         createdMembers = args.data.members.create;
-        return { id: 'room-1' };
+        return { id: 'room-1', createdAt: new Date('2024-01-01T00:00:00.000Z') };
       },
     },
   };
@@ -46,6 +46,7 @@ test('POST / creates a direct chat with the current user and resolved target use
     name: 'Bob',
     member_ids: ['user-1', 'user-2'],
     unread_count: 0,
+    created_at: '2024-01-01T00:00:00.000Z',
   });
   expect(createdMembers).toEqual([{ userId: 'user-1' }, { userId: 'user-2' }]);
 });
@@ -179,7 +180,7 @@ test('POST / creates a group chat with special characters in the name', async ()
     room: {
       create: async (args: { data: { name: string; members: { create: Array<{ userId: string }> } } }) => {
         createdMembers = args.data.members.create;
-        return { id: 'room-1', name: args.data.name };
+        return { id: 'room-1', name: args.data.name, createdAt: new Date('2024-01-01T00:00:00.000Z') };
       },
     },
   };

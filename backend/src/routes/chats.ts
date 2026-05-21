@@ -64,6 +64,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         member_ids:   room.members.map((rm) => rm.userId),
         last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
         unread_count: 0,
+        created_at:   room.createdAt.toISOString(),
       };
     });
 
@@ -115,6 +116,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
           member_ids:   existing.members.map((m) => m.userId),
           last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
           unread_count: 0,
+          created_at:   existing.createdAt.toISOString(),
         } satisfies Chat);
         return;
       }
@@ -132,6 +134,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         name:         targetUser.displayName,
         member_ids:   [userId, targetUser.id],
         unread_count: 0,
+        created_at:   room.createdAt.toISOString(),
       } satisfies Chat);
       return;
     }
@@ -163,6 +166,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
         name:         room.name ?? name,
         member_ids:   allIds,
         unread_count: 0,
+        created_at:   room.createdAt.toISOString(),
       } satisfies Chat);
       return;
     }
@@ -197,6 +201,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       member_ids:   room.members.map((m) => m.userId),
       last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
       unread_count: 0,
+      created_at:   room.createdAt.toISOString(),
     } satisfies Chat);
   });
 
