@@ -298,3 +298,20 @@ test('presence online and offline frames reach contacts in shared rooms', async 
   expect(onlineFrame).toEqual({ type: 'presence', user_id: bob.id, online: true });
   expect(offlineFrame).toEqual({ type: 'presence', user_id: bob.id, online: false });
 });
+
+test('newly connected client receives presence for already-online room members', async () => {
+  const { alice, bob } = await seedUsersAndRooms();
+  const port = await startServer();
+
+  // Alice connects first and waits for setup to complete
+  await openWs(port, `token=${token(alice.id, alice.username)}`);
+
+  // Bob connects after — should immediately receive Alice's online presence
+  const bobWs = await openWs(port, `token=${token(bob.id, bob.username)}`);
+  const frame = await waitForJsonFrame<WsServerFrame>(
+    bobWs,
+    (f) => f.type === 'presence' && f.user_id === alice.id && f.online,
+  );
+
+  expect(frame).toEqual({ type: 'presence', user_id: alice.id, online: true });
+});

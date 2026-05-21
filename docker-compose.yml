@@ -1,12 +1,12 @@
 services:
-  app:
+  chat-service:
+    image: backend-sketch-backend-dev
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+    command: npx tsx watch services/chat-service/src/main.ts
     ports:
-      - "8080:8080"   # REST
-      - "8081:8081"   # WebSocket
-      - "5555:5555"   # Prisma Studio
+      - "8080:8080"   # chat-service REST
     volumes:
       - ./backend:/app        # 本機 code → container，改檔案即時生效
       - /app/node_modules     # node_modules 不被本機蓋掉
@@ -16,6 +16,82 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
+      - CHAT_SERVICE_PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  user-service:
+    image: backend-sketch-backend-dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: npx tsx watch services/user-service/src/main.ts
+    ports:
+      - "8082:8082"   # user-service REST
+      - "5555:5555"   # Prisma Studio
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_secret_change_in_prod
+      - API_VERSION=1
+      - USER_SERVICE_PORT=8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  realtime-service:
+    image: backend-sketch-backend-dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: npx tsx watch services/realtime-service/src/main.ts
+    ports:
+      - "8081:8081"   # WebSocket
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_secret_change_in_prod
+      - WS_PORT=8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notification-service:
+    image: backend-sketch-backend-dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: npx tsx watch services/notification-service/src/main.ts
+    ports:
+      - "8083:8083"   # notification-service health
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev_secret_change_in_prod
+      - API_VERSION=1
+      - NOTIFICATION_SERVICE_PORT=8083
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,6 +100,7 @@ services:
     restart: unless-stopped
 
   test:
+    image: backend-sketch-backend-dev
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
@@ -37,6 +114,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
+      - CHAT_SERVICE_PORT=8080
+      - WS_PORT=8081
+      - USER_SERVICE_PORT=8082
+      - NOTIFICATION_SERVICE_PORT=8083
     depends_on:
       postgres-test:
         condition: service_healthy
