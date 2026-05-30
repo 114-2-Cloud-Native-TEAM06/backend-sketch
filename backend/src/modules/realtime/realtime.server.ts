@@ -1,12 +1,22 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { PrismaClient } from '@prisma/client';
 import { parse } from 'url';
+import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { AppError } from '../shared/errors/app-error.js';
 import { verifyToken } from '../shared/auth/jwt.js';
 import { createMessage } from '../chats/chats.service.js';
 import type { WsErrorReason, WsServerFrame } from '../shared/types/api-types.js';
+import { logger } from '../shared/observability/logger.js';
+import {
+  messageFanoutDuration,
+  messagesSentTotal,
+  observeActiveConnections,
+  wsErrorsTotal,
+} from '../shared/observability/metrics.js';
 import { InMemoryPresenceStore } from './realtime.service.js';
 import type { ClientState, JwtPayload, PresenceStore } from './realtime.types.js';
+
+const tracer = trace.getTracer('im-backend');
 
 type RawFrame = Record<string, unknown> & { type?: unknown };
 
@@ -16,6 +26,11 @@ export function createWebSocketServer(
   presenceStore: PresenceStore = new InMemoryPresenceStore(),
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
+
+  // Expose live connection count as an observable gauge (cheap O(1) read).
+  // Dispose on server close so callbacks don't pile up across lifecycles.
+  const disposeActiveConnections = observeActiveConnections(() => presenceStore.activeConnections);
+  wss.on('close', () => disposeActiveConnections());
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -59,44 +74,64 @@ export function createWebSocketServer(
     return true;
   };
 
-  const handleSend = async (state: ClientState, frame: RawFrame): Promise<void> => {
-    if (typeof frame.request_id !== 'string' || !frame.request_id) {
-      sendError(state.ws, 'validation_failed', 'request_id is required');
-      return;
-    }
-    if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
-      sendError(state.ws, 'validation_failed', 'chat_id is required');
-      return;
-    }
-    if (typeof frame.body !== 'string' || !frame.body.trim()) {
-      sendError(state.ws, 'validation_failed', 'body is required');
-      return;
-    }
+  const handleSend = (state: ClientState, frame: RawFrame): Promise<void> =>
+    tracer.startActiveSpan('im.message.receive', async (span) => {
+      try {
+        if (typeof frame.request_id !== 'string' || !frame.request_id) {
+          sendError(state.ws, 'validation_failed', 'request_id is required');
+          return;
+        }
+        if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
+          sendError(state.ws, 'validation_failed', 'chat_id is required');
+          return;
+        }
+        if (typeof frame.body !== 'string' || !frame.body.trim()) {
+          sendError(state.ws, 'validation_failed', 'body is required');
+          return;
+        }
 
-    try {
-      const message = await createMessage(prisma, {
-        senderId: state.user.userId,
-        chatId: frame.chat_id,
-        body: frame.body,
-        requestId: frame.request_id,
-      });
-      presenceStore.addSocketToRoom(state, frame.chat_id);
-      sendJson(state.ws, {
-        type: 'ack',
-        request_id: frame.request_id,
-        message_id: message.id,
-        persisted_at: message.created_at,
-      });
-      presenceStore.broadcastToRoom(frame.chat_id, { type: 'msg', message });
-    } catch (err) {
-      if (err instanceof AppError) {
-        sendError(state.ws, mapAppErrorToWsReason(err), err.message);
-        return;
+        // Attributes must never carry the message body or the auth token.
+        span.setAttribute('im.chat_id', frame.chat_id);
+        span.setAttribute('im.sender_id', state.user.userId);
+
+        try {
+          const message = await createMessage(prisma, {
+            senderId: state.user.userId,
+            chatId: frame.chat_id,
+            body: frame.body,
+            requestId: frame.request_id,
+          });
+          presenceStore.addSocketToRoom(state, frame.chat_id);
+          sendJson(state.ws, {
+            type: 'ack',
+            request_id: frame.request_id,
+            message_id: message.id,
+            persisted_at: message.created_at,
+          });
+
+          const fanoutStart = performance.now();
+          presenceStore.broadcastToRoom(frame.chat_id, { type: 'msg', message });
+          // No chat_id label: room IDs are unbounded and would explode metric cardinality.
+          // The chat_id lives on the span instead.
+          messageFanoutDuration.record(performance.now() - fanoutStart);
+          messagesSentTotal.add(1);
+        } catch (err) {
+          if (err instanceof AppError) {
+            wsErrorsTotal.add(1, { reason: mapAppErrorToWsReason(err) });
+            span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+            sendError(state.ws, mapAppErrorToWsReason(err), err.message);
+            return;
+          }
+          wsErrorsTotal.add(1, { reason: 'internal_error' });
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          logger.error({ err }, 'ws send failed');
+          sendError(state.ws, 'validation_failed', 'message could not be sent');
+        }
+      } finally {
+        span.end();
       }
-      console.error('ws send failed:', err);
-      sendError(state.ws, 'validation_failed', 'message could not be sent');
-    }
-  };
+    });
 
   const handleTyping = async (state: ClientState, frame: RawFrame): Promise<void> => {
     if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
@@ -199,10 +234,10 @@ export function createWebSocketServer(
         sendJson(ws, { type: 'presence', user_id: onlineUserId, online: true });
       }
 
-      // console.log('ws connected:', user.userId);
       if (!wasOnline) broadcastPresence(state, true);
     })().catch((err) => {
-      console.error('ws connection setup failed:', err);
+      wsErrorsTotal.add(1, { reason: 'connection_setup' });
+      logger.error({ err }, 'ws connection setup failed');
       ws.close(1011, 'internal_error');
     });
   });
@@ -215,7 +250,7 @@ export function startWebSocketServer(
   prisma?: PrismaClient,
 ): WebSocketServer {
   const wss = createWebSocketServer(port, prisma);
-  console.log(`WebSocket server running on port ${port}`);
+  logger.info({ port }, 'WebSocket server running');
   return wss;
 }
 

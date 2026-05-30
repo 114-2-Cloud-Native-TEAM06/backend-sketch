@@ -1,0 +1,33 @@
+# Observability backend — runs independently of the app, joined via the shared
+# external `obs-net` network. Works with either `docker compose` (Codespaces)
+# or `podman compose` (local). For local Podman, use a netavark-based install
+# (Podman 4.x+, the default) so the app resolves `lgtm` while ALSO on its own
+# default network — older CNI-backed Podman only aliases the first network.
+#
+# One-time setup:   docker network create obs-net   (or: podman network create obs-net)
+# Start:            docker compose -f observability/docker-compose.yml up -d
+#
+# Grafana UI: http://localhost:3000
+# grafana/otel-lgtm bundles the OTel Collector + Tempo (traces) + Mimir (metrics)
+# + Loki (logs) + Pyroscope (profiles) + Grafana, with datasources preprovisioned.
+services:
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: lgtm
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "4040:4040"   # Pyroscope (profiles) — bundled in this image
+    volumes:
+      - lgtm-data:/data        # persist dashboards/data across restarts
+    networks:
+      - obs-net
+    restart: unless-stopped
+
+networks:
+  obs-net:
+    external: true
+
+volumes:
+  lgtm-data:

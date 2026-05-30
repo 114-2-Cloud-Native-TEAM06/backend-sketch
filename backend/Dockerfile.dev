@@ -8,4 +8,6 @@ RUN apk add --no-cache openssl
 
 RUN npm install
 
-CMD ["npx", "tsx", "watch", "src/index.ts"]
+# Exec tsx directly (no `npx` hop) so SIGTERM reaches the app and the graceful
+# telemetry flush in src/index.ts runs on container stop.
+CMD ["./node_modules/.bin/tsx", "watch", "--import", "./src/instrumentation.ts", "src/index.ts"]

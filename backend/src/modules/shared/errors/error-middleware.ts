@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { AppError, raiseApiError } from './app-error.js';
+import { logger } from '../observability/logger.js';
 
 export function errorMiddleware(
   err: unknown,
@@ -12,6 +13,6 @@ export function errorMiddleware(
     return;
   }
 
-  console.error(`[${req.method} ${req.originalUrl}]`, err);
+  logger.error({ err, method: req.method, url: req.originalUrl }, 'unhandled request error');
   res.status(500).json(raiseApiError('INTERNAL', 'Internal server error'));
 }

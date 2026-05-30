@@ -6,6 +6,11 @@ export class InMemoryPresenceStore implements PresenceStore {
   private readonly roomSockets = new Map<string, Set<WebSocket>>();
   private readonly clientStates = new Map<WebSocket, ClientState>();
 
+  // Map#size is O(1), so the active-connections metric callback stays cheap.
+  get activeConnections(): number {
+    return this.clientStates.size;
+  }
+
   addClient(state: ClientState): void {
     this.clientStates.set(state.ws, state);
   }

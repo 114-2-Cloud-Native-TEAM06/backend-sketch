@@ -13,6 +13,8 @@ export interface ClientState {
 }
 
 export interface PresenceStore {
+  /** Number of currently open connections. O(1); safe to read from a metric callback. */
+  readonly activeConnections: number;
   addClient(state: ClientState): void;
   removeClient(ws: WebSocket): ClientState | undefined;
   getClientState(ws: WebSocket): ClientState | undefined;

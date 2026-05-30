@@ -3,6 +3,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+    init: true                # PID 1 init so SIGTERM reaches node → telemetry flush
     ports:
       - "8080:8080"   # REST
       - "8081:8081"   # WebSocket
@@ -16,11 +17,19 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
+      # ── Observability (points at the obs-net stack by service name) ──
+      - OTEL_SERVICE_NAME=im-backend
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - PYROSCOPE_SERVER_ADDRESS=http://lgtm:4040   # Pyroscope is bundled in otel-lgtm
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - default     # reach postgres / redis
+      - obs-net     # reach lgtm (OTLP) / pyroscope
     restart: unless-stopped
 
   test:
@@ -86,6 +95,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+networks:
+  default:
+  obs-net:
+    external: true   # create once: docker network create obs-net
 
 volumes:
   postgres_data:
