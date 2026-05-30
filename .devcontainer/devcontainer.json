@@ -1,0 +1,20 @@
+{
+  "name": "im-backend-observability",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
+  "features": {
+    // Docker-in-Docker so `docker compose` works inside the Codespace.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  // Auto-forwarded so you can click straight through to Grafana / the API.
+  "forwardPorts": [3000, 8080, 8081, 4040],
+  "portsAttributes": {
+    "3000": { "label": "Grafana", "onAutoForward": "openBrowser" },
+    "8080": { "label": "REST API" },
+    "8081": { "label": "WebSocket" },
+    "4040": { "label": "Pyroscope" }
+  },
+  // Create the shared external network the two compose files expect, so you can
+  // go straight to the runbook (`docker compose -f observability/... up -d`).
+  "postCreateCommand": "docker network create obs-net || true",
+  "remoteUser": "node"
+}
