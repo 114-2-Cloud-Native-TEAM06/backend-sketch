@@ -11,6 +11,7 @@
  *   - profiles→ Pyroscope SDK → Pyroscope server (separate path, NOT via OTLP)
  *   - logs are shipped by pino (see modules/shared/observability/logger.ts), not here.
  */
+import { register } from 'node:module';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -25,6 +26,14 @@ import prismaInstrumentationPkg from '@prisma/instrumentation';
 import { RedactingSpanProcessor } from './modules/shared/observability/redacting-span-processor.js';
 
 const { PrismaInstrumentation } = prismaInstrumentationPkg;
+
+// Enable import-in-the-middle so instrumentations that patch ESM-imported
+// packages (notably @prisma/client) actually attach under pure ESM. Without
+// this, HTTP/Express still work (require-in-the-middle on core/CJS) but Prisma
+// query spans never appear. Must run before any instrumented module loads —
+// i.e. before index.ts imports the app, which this file (preloaded via
+// --import) does.
+register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
