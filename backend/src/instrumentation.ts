@@ -11,7 +11,6 @@
  *   - profiles→ Pyroscope SDK → Pyroscope server (separate path, NOT via OTLP)
  *   - logs are shipped by pino (see modules/shared/observability/logger.ts), not here.
  */
-import { register } from 'node:module';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -20,20 +19,7 @@ import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
-// @prisma/instrumentation v5 is CommonJS; under native ESM the named export
-// isn't statically detectable, so default-import the module and destructure.
-import prismaInstrumentationPkg from '@prisma/instrumentation';
 import { RedactingSpanProcessor } from './modules/shared/observability/redacting-span-processor.js';
-
-const { PrismaInstrumentation } = prismaInstrumentationPkg;
-
-// Enable import-in-the-middle so instrumentations that patch ESM-imported
-// packages (notably @prisma/client) actually attach under pure ESM. Without
-// this, HTTP/Express still work (require-in-the-middle on core/CJS) but Prisma
-// query spans never appear. Must run before any instrumented module loads —
-// i.e. before index.ts imports the app, which this file (preloaded via
-// --import) does.
-register('@opentelemetry/instrumentation/hook.mjs', import.meta.url);
 
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
@@ -65,7 +51,6 @@ const sdk = new NodeSDK({
       // fs spans are noisy and rarely the bottleneck for this workload.
       '@opentelemetry/instrumentation-fs': { enabled: false },
     }),
-    new PrismaInstrumentation(),
   ],
 });
 
