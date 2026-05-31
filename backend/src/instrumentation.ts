@@ -19,8 +19,12 @@ import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
-import { PrismaInstrumentation } from '@prisma/instrumentation';
+// @prisma/instrumentation v5 is CommonJS; under native ESM the named export
+// isn't statically detectable, so default-import the module and destructure.
+import prismaInstrumentationPkg from '@prisma/instrumentation';
 import { RedactingSpanProcessor } from './modules/shared/observability/redacting-span-processor.js';
+
+const { PrismaInstrumentation } = prismaInstrumentationPkg;
 
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
