@@ -23,6 +23,17 @@ export const messageFanoutDuration = meter.createHistogram('im_message_fanout_du
   unit: 'ms',
 });
 
+/**
+ * Prisma DB query duration. Fed from PrismaClient's `query` event (see
+ * shared/db/prisma.ts) — version-independent DB visibility, since the Prisma
+ * OTel auto-instrumentation is incompatible with OTel SDK 2.x. No labels: the
+ * raw SQL is unbounded and would explode cardinality.
+ */
+export const dbQueryDuration = meter.createHistogram('im_db_query_duration', {
+  description: 'Prisma database query duration',
+  unit: 'ms',
+});
+
 const activeConnectionsGauge = meter.createObservableGauge('im_ws_active_connections', {
   description: 'Currently open WebSocket connections',
 });

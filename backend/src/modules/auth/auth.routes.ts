@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../shared/auth/auth-middleware.js';
+import { createPrismaClient } from '../shared/db/prisma.js';
 import { login, refresh, register } from './auth.service.js';
 
-export function createAuthRouter(prisma: PrismaClient = new PrismaClient()): Router {
+export function createAuthRouter(prisma: PrismaClient = createPrismaClient()): Router {
   const router = Router();
 
   router.post('/register', async (req: Request, res: Response): Promise<void> => {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../shared/auth/auth-middleware.js';
+import { createPrismaClient } from '../shared/db/prisma.js';
 import type { CreateChatRequest } from '../shared/types/api-types.js';
 import {
   createChat,
@@ -12,7 +13,7 @@ import {
   sendTyping,
 } from './chats.service.js';
 
-export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Router {
+export function createChatRouter(prisma: PrismaClient = createPrismaClient()): Router {
   const router = Router();
 
   router.get('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {

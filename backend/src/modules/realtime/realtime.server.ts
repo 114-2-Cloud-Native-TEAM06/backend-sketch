@@ -6,6 +6,7 @@ import { AppError } from '../shared/errors/app-error.js';
 import { verifyToken } from '../shared/auth/jwt.js';
 import { createMessage } from '../chats/chats.service.js';
 import type { WsErrorReason, WsServerFrame } from '../shared/types/api-types.js';
+import { createPrismaClient } from '../shared/db/prisma.js';
 import { logger } from '../shared/observability/logger.js';
 import {
   messageFanoutDuration,
@@ -22,7 +23,7 @@ type RawFrame = Record<string, unknown> & { type?: unknown };
 
 export function createWebSocketServer(
   port = Number(process.env.WS_PORT || 8081),
-  prisma: PrismaClient = new PrismaClient(),
+  prisma: PrismaClient = createPrismaClient(),
   presenceStore: PresenceStore = new InMemoryPresenceStore(),
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
