@@ -24,6 +24,9 @@ import { RedactingSpanProcessor } from './modules/shared/observability/redacting
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
 const PYROSCOPE_ENDPOINT = process.env.PYROSCOPE_SERVER_ADDRESS ?? 'http://localhost:4040';
+// Basic auth for a hosted Pyroscope (e.g. Grafana Cloud). Left blank for local.
+const PYROSCOPE_AUTH_USER = process.env.PYROSCOPE_BASIC_AUTH_USER;
+const PYROSCOPE_AUTH_PASSWORD = process.env.PYROSCOPE_BASIC_AUTH_PASSWORD;
 // Master switch: OBSERVABILITY_ENABLED=false turns off traces, metrics, log
 // shipping AND profiling in one flag (the app still runs, logging to stdout).
 const OBSERVABILITY_ENABLED = process.env.OBSERVABILITY_ENABLED !== 'false';
@@ -83,6 +86,10 @@ if (PROFILING_ENABLED) {
         serverAddress: PYROSCOPE_ENDPOINT,
         appName: SERVICE_NAME,
         tags: { service_name: SERVICE_NAME },
+        // Hosted Pyroscope (Grafana Cloud) basic auth, if configured.
+        ...(PYROSCOPE_AUTH_USER
+          ? { basicAuthUser: PYROSCOPE_AUTH_USER, basicAuthPassword: PYROSCOPE_AUTH_PASSWORD }
+          : {}),
       });
       p.start();
       console.log(`[instrumentation] pyroscope STARTED → ${PYROSCOPE_ENDPOINT} app=${SERVICE_NAME}`);

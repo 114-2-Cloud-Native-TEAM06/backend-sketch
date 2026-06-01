@@ -17,11 +17,17 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
-      # ── Observability (points at the obs-net stack by service name) ──
+      # ── Observability ──
+      # Defaults point at the local obs-net stack. To ship to a hosted backend
+      # (e.g. Grafana Cloud), put the values in a `.env` file next to this
+      # compose (see .env.grafana-cloud.example) — they override the defaults.
       - OTEL_SERVICE_NAME=im-backend
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318
-      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - PYROSCOPE_SERVER_ADDRESS=http://lgtm:4040   # Pyroscope is bundled in otel-lgtm
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://lgtm:4318}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - PYROSCOPE_SERVER_ADDRESS=${PYROSCOPE_SERVER_ADDRESS:-http://lgtm:4040}
+      - PYROSCOPE_BASIC_AUTH_USER=${PYROSCOPE_BASIC_AUTH_USER:-}
+      - PYROSCOPE_BASIC_AUTH_PASSWORD=${PYROSCOPE_BASIC_AUTH_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -34,6 +34,30 @@ curl http://localhost:8080/health        # → {"status":"ok"}
 
 ---
 
+## 1b.（可選）改送 Grafana Cloud — 免費、免自架
+
+不想在本機跑 observability stack，可把資料送到 **Grafana Cloud 免費方案**（永久免費；app 還是在本機跑）。
+
+1. 到 [grafana.com](https://grafana.com) 註冊免費 stack。
+2. 取得兩組連線資訊：
+   - **OTLP**（traces/metrics/logs）：stack → *Connections / OTLP / Configure OpenTelemetry* → 複製 endpoint + `Authorization` header。
+   - **Pyroscope**（profiles）：stack → *Pyroscope / Profiles* → endpoint + 一組 token（scope 含 `profiles:write`）。
+3. 複製範本並填值（`.env` 已 gitignore，**勿提交 token**）：
+   ```powershell
+   Copy-Item .env.grafana-cloud.example .env
+   notepad .env          # 填入上面的值
+   ```
+4. 重建 app（`up` 才會吃新 env；本機 stack 可以不用開）：
+   ```powershell
+   docker compose up -d app
+   ```
+
+`docker-compose.yml` 的可觀測性 env 已改成 `${VAR:-本機預設}` —— **有 `.env` 就送雲端，沒有就送本機 lgtm**，不用改別的。儀表板一樣把 [dashboards/im-backend-observability.json](dashboards/im-backend-observability.json) 匯入你的 Grafana Cloud（選 Cloud 的 Prometheus 資料源）。
+
+> 程式端已支援：traces/metrics/logs 走 `OTEL_EXPORTER_OTLP_ENDPOINT` + `OTEL_EXPORTER_OTLP_HEADERS`；profiles 走 `PYROSCOPE_SERVER_ADDRESS` + `PYROSCOPE_BASIC_AUTH_USER/PASSWORD`。
+
+---
+
 ## 2. 匯入 Dashboard（一頁看全部）
 
 Grafana → **Dashboards → New → Import** → 上傳 [dashboards/im-backend-observability.json](dashboards/im-backend-observability.json) → 選 **Prometheus** 資料源 → Import。
