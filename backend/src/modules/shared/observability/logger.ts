@@ -15,7 +15,10 @@ import pino, { type Logger } from 'pino';
  */
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const LEVEL = process.env.LOG_LEVEL ?? 'info';
-const SHIP_LOGS = process.env.NODE_ENV !== 'test' && process.env.OTEL_LOGS_DISABLED !== 'true';
+const SHIP_LOGS =
+  process.env.OBSERVABILITY_ENABLED !== 'false' &&
+  process.env.NODE_ENV !== 'test' &&
+  process.env.OTEL_LOGS_DISABLED !== 'true';
 
 function traceContextMixin(): Record<string, string | number> {
   const span = trace.getSpan(context.active());

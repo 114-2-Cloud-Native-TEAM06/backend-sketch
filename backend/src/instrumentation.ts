@@ -24,7 +24,10 @@ import { RedactingSpanProcessor } from './modules/shared/observability/redacting
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
 const PYROSCOPE_ENDPOINT = process.env.PYROSCOPE_SERVER_ADDRESS ?? 'http://localhost:4040';
-const PROFILING_ENABLED = process.env.PROFILING_ENABLED !== 'false';
+// Master switch: OBSERVABILITY_ENABLED=false turns off traces, metrics, log
+// shipping AND profiling in one flag (the app still runs, logging to stdout).
+const OBSERVABILITY_ENABLED = process.env.OBSERVABILITY_ENABLED !== 'false';
+const PROFILING_ENABLED = OBSERVABILITY_ENABLED && process.env.PROFILING_ENABLED !== 'false';
 
 // ─── OpenTelemetry: traces + metrics ─────────────────────────────────────────
 const sdk = new NodeSDK({
@@ -54,7 +57,12 @@ const sdk = new NodeSDK({
   ],
 });
 
-sdk.start();
+if (OBSERVABILITY_ENABLED) {
+  sdk.start();
+} else {
+  // eslint-disable-next-line no-console -- logger not yet wired at bootstrap
+  console.log('[instrumentation] OBSERVABILITY_ENABLED=false — telemetry off');
+}
 
 // ─── Pyroscope: profiling (separate path; degrade gracefully if it fails) ─────
 // Dynamic import: the native @datadog/pprof binding only loads on the Linux
@@ -95,6 +103,6 @@ let shuttingDown = false;
 export async function shutdownTelemetry(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  await sdk.shutdown();
+  if (OBSERVABILITY_ENABLED) await sdk.shutdown();
   if (stopProfiling) await stopProfiling();
 }

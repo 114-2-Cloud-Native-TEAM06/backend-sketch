@@ -14,6 +14,23 @@
 
 ---
 
+## 🔌 開關（啟用 / 關閉可觀測性）
+
+預設**全開**。用環境變數控制：
+
+| Env | 預設 | 效果 |
+|---|---|---|
+| `OBSERVABILITY_ENABLED=false` | (開) | **總開關** —— 一次關掉 traces + metrics + log 上傳 + profiling。app 照常運作，log 只進 stdout |
+| `PROFILING_ENABLED=false` | (開) | 只關 Pyroscope profiling |
+| `OTEL_LOGS_DISABLED=true` | (開) | 只關 log 的 OTLP 上傳（pino 仍寫 stdout） |
+| `DB_SLOW_QUERY_MS=<ms>` | `100` | 慢查詢 log 的門檻 |
+
+> **正式環境通常不關**（observability 在正式環境最有用，且最大開銷的 Prisma tracing 已移除）。
+> 正式上線多半是把 `OTEL_EXPORTER_OTLP_ENDPOINT` / `PYROSCOPE_SERVER_ADDRESS` 指向正式後端（例如 Grafana Cloud），而非關閉。
+> 真要完全關：在 `docker-compose.yml` 的 app 環境變數加 `OBSERVABILITY_ENABLED=false`，或啟動時不要 `--import ./src/instrumentation.ts` 預載。
+
+---
+
 ## 📊 Metrics
 
 ### 自訂 IM 指標（手動埋點）
