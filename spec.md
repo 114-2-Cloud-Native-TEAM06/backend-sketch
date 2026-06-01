@@ -142,7 +142,7 @@ GET  /api/v1/chats/:id/messages       # 歷史訊息（cursor-based: ?before_mes
 
 ### 開發順序
 
-1. ✅ Auth（`POST /auth/register`、`POST /auth/login`）+ Prisma schema
+1. ✅ Auth（`POST /api/v1/auth/register`、`POST /api/v1/auth/login`）+ Prisma schema
 2. ✅ WebSocket server（`:8081`）：連線 JWT 驗證、`ping/pong` heartbeat
 3. Chat CRUD + 歷史訊息 REST API（`:8080`）
 4. WebSocket 訊息收發（`send` → DB 寫入 → `ack` 回傳 + `msg` fanout）

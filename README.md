@@ -7,11 +7,11 @@
 ### Authentication
 
 ```
-POST /auth/register
-Body: { "username": "alice", "email": "alice@example.com", "password": "secret" }
+POST /api/v1/auth/register
+Body: { "username": "alice", "email": "alice@example.com", "password": "password123", "display_name": "Alice" }
 
-POST /auth/login
-Body: { "email": "alice@example.com", "password": "secret" }
+POST /api/v1/auth/login
+Body: { "email": "alice@example.com", "password": "password123" }
 ```
 
 Both endpoints return `{ user, token }`. Include the token in subsequent requests:
@@ -22,22 +22,22 @@ Authorization: Bearer <token>
 ### Users
 
 ```
-GET /users/me           # current user profile
-GET /users/:id          # look up a user before creating a room
+GET /api/v1/users/me           # current user profile
+GET /api/v1/users/:id          # look up a user before creating a chat
 ```
 
-### Rooms
+### Chats
 
 ```
-POST /rooms             # create a 1-on-1 or group room
-GET  /rooms             # list my rooms (sorted by latest message)
-GET  /rooms/:id         # room detail
+POST /api/v1/chats             # create a 1-on-1 or group chat
+GET  /api/v1/chats             # list my chats (sorted by latest message)
+GET  /api/v1/chats/:id         # chat detail
 ```
 
 ### Messages
 
 ```
-GET /rooms/:id/messages?cursor=<messageId>&limit=50   # paginated history
+GET /api/v1/chats/:id/messages?before_message_id=<messageId>&limit=50   # paginated history
 ```
 
 ### WebSocket Events (socket.io)
