@@ -87,6 +87,33 @@ docker compose exec -e USERS=80 -e LOGIN_CONCURRENCY=40 -e SEND_INTERVAL_MS=100 
 
 輸出會印 `PHASE 1 START/END`、`PHASE 2 START/END` 時間戳 + 登入延遲(avg/p50/p95/max) + 訊息 sent/ack/recv。
 
+### 3d. k6 版壓測（推薦，含 VU / scenario / threshold）
+k6 是 Grafana 的負載測試工具(獨立執行檔,非 Node)。用官方 docker 鏡像跑、**加入 app 的 compose 網路**直接打 service 名：
+
+```bash
+# 先查網路名(通常是 backend-sketch_default)
+docker network ls   # 找 *_default
+
+# 兩階段壓測（登入風暴 → 訊息風暴，分開的 scenario）
+docker run --rm --network backend-sketch_default -v "${PWD}/backend/scripts:/scripts" \
+  grafana/k6 run /scripts/k6-stress.js -e API_URL=http://app:8080/api/v1 -e WS_URL=ws://app:8081
+
+# 單純訊息 ramp（連線數階梯）
+docker run --rm --network backend-sketch_default -v "${PWD}/backend/scripts:/scripts" \
+  grafana/k6 run /scripts/k6-load.js -e API_URL=http://app:8080/api/v1 -e WS_URL=ws://app:8081
+```
+> Windows Docker Desktop 也可改打 host：`-e API_URL=http://host.docker.internal:8080/api/v1 -e WS_URL=ws://host.docker.internal:8081`（就不用指定 `--network`）。
+> PowerShell 把 `${PWD}` 換成 `${PWD}`（PowerShell 支援）或 `$(pwd)`。
+
+| 腳本 | 對應 | 主要 env |
+|---|---|---|
+| [`scripts/k6-stress.js`](../backend/scripts/k6-stress.js) | 兩階段(登入 + 訊息) | `USERS`、`LOGIN_VUS`、`MSG_VUS`、`MSG_DURATION`、`MSG_START`、`SEND_INTERVAL_MS` |
+| [`scripts/k6-load.js`](../backend/scripts/k6-load.js) | 訊息連線 ramp | `USERS`、`SEND_INTERVAL_MS`、`WS_HOLD_MS` |
+
+k6 自己會印 client 端摘要(http p95、checks 通過率、`im_ws_sent/acked/received` counter);**伺服器端**的瓶頸一樣去 Grafana 看(下一節)。Phase 1 / Phase 2 在 dashboard 上靠「WS 連線數那張」分辨(登入階段=0,訊息階段=N)。
+
+> 註:`.mjs` 版(`ws-load.mjs` / `ws-stress.mjs`)是**免安裝 k6** 的備援,直接 `docker compose exec app node scripts/ws-*.mjs` 就能跑,兩者擇一即可。
+
 ---
 
 ## 4. 在 Grafana 觀測什麼（輸入什麼看什麼）
