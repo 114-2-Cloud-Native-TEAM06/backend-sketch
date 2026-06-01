@@ -1,100 +1,79 @@
-# 部署指南（Zeabur）
+# 部署指南 — DigitalOcean App Platform（自動 HTTPS）
 
-把 IM 後端部署到 Zeabur，always-on 運行。每一步都列出來，照順序做。
+把 IM 後端部署到 **DigitalOcean App Platform**，always-on + **自動免費 HTTPS**（老師要求）。
+搭配學生 $200 credit，課程期間等於免費。
 
-## 架構（要建的服務）
+## 重點：單一 port + 自動 HTTPS
 
+App Platform 一個服務只對外開**一個 HTTP port**，所以這個 repo 已支援**單 port 模式**：
+- 設了 `PORT` 環境變數（App Platform 會自動帶）→ app 把 **REST 與 WebSocket 跑在同一個 port**：
+  - REST：`https://<app>.ondigitalocean.app/api/v1/...`
+  - WS：`wss://<app>.ondigitalocean.app/ws/chat?token=...`（同網域、`/ws/chat` 路徑）
+- 沒設 `PORT`（本機 docker-compose / 測試）→ 維持原本兩 port（REST 8080 / WS 8081），不受影響。
+
+> HTTPS / wss 由 App Platform 自動處理，憑證自動續，**不用買網域、不用設憑證**。
+
+## 前端要改的（只有網址，不動邏輯）
 ```
-[App ×N replicas] ──→ [PostgreSQL]   (訊息 / 使用者持久化)
-       │
-       └──────────────→ [NATS (JetStream)]   (訊息非同步寫入 + 跨實例 fanout)
-
-Redis：程式碼尚未使用 → 先不部署，等用到再加。
+# 部署後
+API base : https://<app>.ondigitalocean.app/api/v1
+WS       : wss://<app>.ondigitalocean.app/ws/chat
 ```
-
-App 對外開兩個 port：**8080(REST)** + **8081(WebSocket)**。
-NATS / Redis 皆為「設了對應的 *_URL 才啟用」，沒設就走直接寫 DB 模式。
+把前端的 API base URL 與 WS URL 兩個值換成上面（`ws://` → `wss://`、去掉 `:8081`）。訊息協定不變。
 
 ---
 
-## Step 0：前置
-
-- 一個 GitHub repo（已有：`114-2-Cloud-Native-TEAM06/backend-sketch`）。
-- 部署用的正式 Dockerfile（已加在 `backend/Dockerfile`）。
-- 把 `chore/zeabur-deploy` 合進 **main**（見 Step 1），Zeabur 監看 main。
+## Step 0：拿額度
+辦 [GitHub Student Pack](https://education.github.com/pack)（學校 email / 學生證驗證）→ 領 **DigitalOcean $200 credit**。
 
 ## Step 1：把部署分支合進 main
+開 PR `chore/zeabur-deploy → main` 合併（含 `backend/Dockerfile`、`.dockerignore`、單 port 改動、本指南）。App Platform 監看 main。
+> 想先測再合：App Platform 的 branch 先指 `chore/zeabur-deploy`，測通再合 main。
 
-開 PR `chore/zeabur-deploy → main` 並合併（PR 連結見本檔結尾說明 / 對話）。
-合併後 main 就有 `backend/Dockerfile` + `backend/.dockerignore`，可被 Zeabur build。
+## Step 2：建 App
+1. DigitalOcean → **Create → Apps** → 連 GitHub `114-2-Cloud-Native-TEAM06/backend-sketch`，branch **main**。
+2. **Source Directory = `backend`** → 會自動偵測 `backend/Dockerfile`。
+3. Resource type 選 **Web Service**。
 
-> 想先測再合也可以：Zeabur 服務的 branch 先指向 `chore/zeabur-deploy`，測通後再合 main。
+## Step 3：Web Service 設定
+- **HTTP Port = 8080**（App Platform 會把 `PORT` 環境變數設成這個 → app 自動走單 port、REST+WS 都在這）。
+  - 保險起見可再手動加環境變數 `PORT=8080`。
+- Instance：Basic（最小即可，credit 付）。
 
-## Step 2：Zeabur 專案 + PostgreSQL
+## Step 4：加 PostgreSQL
+- App 內 **Add Resource → Database → Dev Database (PostgreSQL)**。
+- 它會提供連線字串；下一步用變數綁定。
 
-1. Zeabur → New Project。
-2. Add Service → **Marketplace → PostgreSQL**。
-3. 建好後它會提供連線字串（之後給 App 用）。
-
-## Step 3：NATS（JetStream）
-
-1. Add Service → Marketplace 找 **NATS**（若有）；或 Add Service → **Prebuilt / Docker Image** 用 `nats:2.10-alpine`。
-2. 自建時 command 設：`-js -sd /data/jetstream -m 8222`，並掛一個 **Volume** 到 `/data`（JetStream 要持久化）。
-3. 記下內網位址：`nats://<nats-service-name>.zeabur.internal:4222`。
-
-## Step 4：App 服務
-
-1. Add Service → **Git → 選 repo**，branch 選 **main**。
-2. 設定：
-   - **Root Directory** = `backend`（會用 `backend/Dockerfile`）
-   - Build 方式 = Dockerfile（Zeabur 會自動偵測）
-3. 先別急著開外網，先設好環境變數（Step 5）再 deploy。
-
-## Step 5：App 環境變數
-
+## Step 5：環境變數（Web Service）
 ```
-DATABASE_URL=<Zeabur Postgres 連線字串>
-NATS_URL=nats://<nats-service-name>.zeabur.internal:4222
-JWT_SECRET=<換成真正的隨機密鑰，勿用 dev 預設>
+DATABASE_URL=${db.DATABASE_URL}     # 綁定上面的 DB resource（名稱依你建的為準）
+JWT_SECRET=<換成真正的隨機密鑰>
 API_VERSION=1
-# REST_PORT=8080 / WS_PORT=8081 用預設即可，可不填
-# 不要設 REDIS_URL（程式碼還沒用到）
+PORT=8080                            # App Platform 通常自動帶；保險可手動設
+# 不設 NATS_URL / REDIS_URL（第一階段不啟用，走直接寫 DB）
 ```
 
-> 服務間用 `.zeabur.internal` 內網 DNS 互連。DATABASE_URL 可用 Zeabur 的變數引用功能綁定 Postgres 服務。
-
-## Step 6：開兩個對外 port
-
-App 服務 → **Networking**：
-- 暴露 **8080** → 綁一個網域（REST API）
-- 新增暴露 **8081** → 綁另一個網域（WebSocket）
-
-WS client 連 8081 那個網域（`wss://<ws-domain>/ws/chat?token=...`）。
+## Step 6：Migrations
+`backend/Dockerfile` 的 CMD 開機會先跑 `npx prisma migrate deploy` 再啟動，所以**不用額外設定**。
+（也可改用 App Platform 的 **Pre-Deploy Job** 跑 `npx prisma migrate deploy`，多實例時更乾淨。）
 
 ## Step 7：部署 + 驗證
-
-1. Deploy（push main 會自動觸發；首次手動 Deploy）。
-2. 看 build/runtime log：
-   - 應看到 `prisma migrate deploy` 套用 migration
-   - 看到 `REST server running` / `WebSocket server running`
-   - `NATS message DB writer started.` / `NATS message status fanout started.`（代表 NATS 接上了）
-3. 測：`curl https://<rest-domain>/health` → `{"status":"ok"}`
-4. 註冊 / 登入 / 建 chat / WS 送訊息，確認正常。
-
-## Step 8：水平擴展（為 10 萬 DAU）
-
-App 服務 → 設 **replicas ≥ 2**。多實例都連同一個 Postgres + NATS。
-- NATS 負責跨實例的訊息 pipeline + status fanout。
-- **要驗證**：A 實例的使用者發訊息，連在 B 實例的同房使用者是否即時收到 `msg`
-  （目前 `handleSend` 的即時 `msg` 廣播是本機 socket；跨實例靠 `message_status` 事件補，多實例即時性請實測）。
+1. Create Resources → 等 build & deploy。
+2. 看 Runtime Logs：`prisma migrate deploy` 套用、`REST + WebSocket running on port 8080`。
+3. `curl https://<app>.ondigitalocean.app/health` → `{"status":"ok"}`（HTTPS 已生效）。
+4. 前端把網址換成 Step「前端要改的」那兩個，測 REST + WS。
 
 ---
 
-## 之後的增量（不阻塞現在部署）
+## Phase 2：擴展（為 10 萬 DAU）
+- Web Service 調高 **instance count**（水平擴展）。
+- **NATS**：App Platform 不適合（服務無持久化 volume，JetStream 會掉資料）。要 NATS 時用：
+  - 託管 NATS（Synadia NGS），或
+  - 一台小 **Droplet** 跑 NATS（$200 credit 可付），app 設 `NATS_URL` 指過去。
 
-### 加上可觀測性（送 Grafana Cloud）
-1. 把 `feat/observability` 合進 main → Zeabur 自動重新部署。
-2. App 補環境變數：
+## Phase 3：可觀測性（送 Grafana Cloud）
+1. 把 `feat/observability` 合進 main → App Platform 自動重新部署。
+2. Web Service 補環境變數：
    ```
    OTEL_SERVICE_NAME=im-backend
    OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<region>.grafana.net/otlp
@@ -104,23 +83,18 @@ App 服務 → 設 **replicas ≥ 2**。多實例都連同一個 Postgres + NATS
    PYROSCOPE_BASIC_AUTH_USER=<Pyroscope instance ID>
    PYROSCOPE_BASIC_AUTH_PASSWORD=<含 profiles:write 的 token>
    ```
-3. 資料開始持續進 Grafana Cloud（即使你的 localhost 關掉）。
-   - 細節見 [observability/QUICKSTART.md](observability/QUICKSTART.md)（在 feat/observability 分支）。
-
-### 加 Redis（等程式碼用到再做）
-1. Zeabur 一鍵加 Redis 服務。
-2. App 設 `REDIS_URL=redis://<redis-service>.zeabur.internal:6379`。
-3. push 自動重新部署。
-> 在程式碼真的連 Redis 之前，加它沒有作用，所以不急。
+3. 資料持續進 Grafana Cloud（即使本機關掉）。細節見 `observability/QUICKSTART.md`（feat/observability 分支）。
 
 ---
 
-## 疑難排解
+## 替代方案（如果改變主意）
+- **DO Droplet + docker-compose**：整套（app + Postgres + NATS）免改 code、保留兩 port，但 **HTTPS 要自己用 Caddy + 網域**（Student Pack 有送免費 .me 網域）。適合要 NATS 一起跑。
+- **Zeabur**：類似 App Platform，付費（月費 + 用量）。
 
-| 症狀 | 原因 / 解法 |
+## 疑難排解
+| 症狀 | 解法 |
 |---|---|
-| build 找不到 `src/` | 確認 Root Directory = `backend`、用的是 `backend/Dockerfile`（非 Dockerfile.dev） |
-| 啟動報 `tsx`/`prisma` not found | Dockerfile 用 `npm install --include=dev`（已內建）；確認沒被平台改成 production-only install |
-| migrate 失敗 | `DATABASE_URL` 沒設或連不到 Postgres；確認 Postgres 服務已啟動、字串正確 |
-| WS 連不上 | 8081 沒在 Networking 暴露；或 client 連到 REST(8080) 網域而非 WS(8081) 網域 |
-| 啟動卡住 / NATS 報錯 | `NATS_URL` 指向的服務沒起；先確認 NATS 服務 Running，再重啟 app（或先不設 NATS_URL 走直接寫 DB） |
+| WS 連不上 | 確認前端用 `wss://<app>/ws/chat`（同網域、`/ws/chat`、wss）；app log 要顯示 `REST + WebSocket running`（單 port 模式) |
+| 還是兩 port / WS 在 8081 | App Platform 沒帶 `PORT` → 手動加環境變數 `PORT=8080` |
+| build 找不到 src | Source Directory 設 `backend`、用 `backend/Dockerfile` |
+| migrate 失敗 | `DATABASE_URL` 沒綁好或 DB 還沒起 |
