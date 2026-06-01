@@ -1,0 +1,30 @@
+name: backend-sketch-postgres
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-imdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-imdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-sketch-net
+
+volumes:
+  postgres_data:
+    name: backend-sketch-postgres-data
+
+networks:
+  backend-sketch-net:
+    name: backend-sketch-net
+    external: true

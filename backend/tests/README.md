@@ -14,7 +14,7 @@ Run the full backend suite from Docker:
 docker compose --profile test run --rm test
 ```
 
-The Docker test service generates the Prisma client, applies migrations, and uses an isolated PostgreSQL database (`postgres-test` / `imdb_test`) with `NODE_ENV=test`. Integration tests call `resetDatabase()` before each test and again after the suite finishes. The reset helper refuses to run unless `NODE_ENV=test` and `DATABASE_URL` points to a test database, which prevents accidental cleanup of a development database.
+The Docker test service generates the Prisma client, applies migrations, and uses isolated PostgreSQL and Redis services (`postgres-test` / `imdb_test`, `redis-test`) with `NODE_ENV=test`. Integration tests call `resetDatabase()` before each test and again after the suite finishes. The reset helper refuses to run unless `NODE_ENV=test` and `DATABASE_URL` points to a test database, which prevents accidental cleanup of a development database.
 
 Run only unit tests in Docker:
 

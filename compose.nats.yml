@@ -1,0 +1,28 @@
+name: backend-sketch-nats
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "${NATS_HOST_PORT:-4222}:4222"
+      - "${NATS_MONITOR_HOST_PORT:-8222}:8222"
+    volumes:
+      - nats_data:/tmp/nats
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-sketch-net
+
+volumes:
+  nats_data:
+    name: backend-sketch-nats-data
+
+networks:
+  backend-sketch-net:
+    name: backend-sketch-net
+    external: true

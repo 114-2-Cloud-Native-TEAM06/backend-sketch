@@ -10,6 +10,7 @@ export interface ClientState {
   ws: WebSocket;
   user: JwtPayload;
   roomIds: Set<string>;
+  connectionId: string;
 }
 
 export interface PresenceStore {

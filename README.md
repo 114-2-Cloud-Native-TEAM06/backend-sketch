@@ -57,16 +57,22 @@ GET /rooms/:id/messages?cursor=<messageId>&limit=50   # paginated history
 
 - Docker & Docker Compose
 
-No other local dependencies are required. Node.js, PostgreSQL, and Redis all run inside containers.
+No other local dependencies are required. Node.js, PostgreSQL, Redis, and NATS all run inside containers.
 
-**Start the full stack:**
+**Start the development stacks:**
 ```bash
-docker compose up --build -d
+docker network inspect backend-sketch-net >/dev/null 2>&1 || docker network create backend-sketch-net
+docker compose -f compose.postgres.yml up -d --wait
+docker compose -f compose.redis.yml up -d --wait
+docker compose -f compose.nats.yml up -d --wait
+docker compose -f compose.api.yml up -d --build
+docker compose -f compose.realtime.yml up -d
+docker compose -f compose.writer.yml up -d
 ```
 
 **First-time database setup:**
 ```bash
-docker compose exec app npx prisma migrate dev --name init
+docker compose -f compose.api.yml exec user-service npx prisma migrate dev --name init
 ```
 
 **Verify it's running:**
@@ -82,7 +88,43 @@ curl http://localhost:8080/health
 ### Start Development Environment
 
 ```bash
-docker compose up -d
+docker network inspect backend-sketch-net >/dev/null 2>&1 || docker network create backend-sketch-net
+docker compose -f compose.postgres.yml up -d --wait
+docker compose -f compose.redis.yml up -d --wait
+docker compose -f compose.nats.yml up -d --wait
+docker compose -f compose.api.yml up -d
+docker compose -f compose.realtime.yml up -d
+docker compose -f compose.writer.yml up -d
+```
+
+Runtime services are intentionally split across compose projects:
+
+- `compose.postgres.yml`: PostgreSQL durable database.
+- `compose.redis.yml`: Redis presence, rate-limit, idempotency cache, and realtime room event pub/sub.
+- `compose.nats.yml`: NATS JetStream durable message write buffer.
+- `compose.api.yml`: user, chat, and notification REST services.
+- `compose.realtime.yml`: WebSocket realtime service.
+- `compose.writer.yml`: NATS message writer service.
+
+All runtime stacks join the external `backend-sketch-net` Docker network and use Docker DNS names such as `postgres:5432`, `redis:6379`, and `nats:4222`. This lets Redis pub/sub, NATS buffering, realtime, and writer be restarted, stopped, or debugged independently:
+
+```bash
+docker compose -f compose.redis.yml logs -f redis
+docker compose -f compose.nats.yml logs -f nats
+docker compose -f compose.realtime.yml restart realtime-service
+docker compose -f compose.writer.yml stop message-writer-service
+MESSAGE_WRITER_BATCH_SIZE=500 MESSAGE_WRITER_CPUS=2 docker compose -f compose.writer.yml up -d
+```
+
+Stop runtime stacks in reverse dependency order:
+
+```bash
+docker compose -f compose.writer.yml down
+docker compose -f compose.realtime.yml down
+docker compose -f compose.api.yml down
+docker compose -f compose.nats.yml down
+docker compose -f compose.redis.yml down
+docker compose -f compose.postgres.yml down
 ```
 
 ### Run Backend Tests
@@ -138,7 +180,7 @@ NODE_ENV=test DATABASE_URL=postgresql://admin:password@localhost:5432/imdb_test 
 Open Prisma Studio to view and manage database records:
 
 ```bash
-docker compose exec app npx prisma studio --hostname 0.0.0.0
+docker compose -f compose.api.yml exec user-service npx prisma studio --hostname 0.0.0.0
 ```
 
 Then visit `http://localhost:5555` in your browser.

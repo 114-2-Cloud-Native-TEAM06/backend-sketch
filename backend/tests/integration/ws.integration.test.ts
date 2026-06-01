@@ -5,6 +5,8 @@ import WebSocket from 'ws';
 import { afterAll, afterEach, beforeEach, expect, test } from 'vitest';
 import { startWebSocketServer } from '../../services/realtime-service/src/modules/realtime/realtime.server.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
+import { FakeRedis, roomEventChannel } from '../../packages/shared-redis/src/index.js';
+import { InMemoryMessageWriteBuffer } from '../../packages/shared-nats/src/index.js';
 import {
   connectWs,
   expectNoMessage,
@@ -17,16 +19,37 @@ import type { WsServerFrame } from '../../packages/shared-types/src/api-types.js
 
 process.env.JWT_SECRET ??= 'unit-test-secret';
 
-let activeServer: ReturnType<typeof startWebSocketServer> | undefined;
+let activeServers: Array<ReturnType<typeof startWebSocketServer>> = [];
+const originalRateLimitMode = process.env.WS_RATE_LIMIT_MODE;
+const originalSendRateLimit = process.env.WS_SEND_RATE_LIMIT_PER_SEC;
 
 function token(userId = 'user-1', username = 'alice'): string {
   return jwt.sign({ userId, username }, process.env.JWT_SECRET!);
 }
 
 async function startServer(): Promise<number> {
-  activeServer = startWebSocketServer(0, prisma);
-  await once(activeServer, 'listening');
-  return (activeServer.address() as AddressInfo).port;
+  const server = startWebSocketServer(0, prisma);
+  activeServers.push(server);
+  await once(server, 'listening');
+  return (server.address() as AddressInfo).port;
+}
+
+async function startServerWithRedis(redis: FakeRedis): Promise<number> {
+  const server = startWebSocketServer(0, prisma, {
+    redis,
+    publisher: redis.duplicate(),
+    subscriber: redis.duplicate(),
+  });
+  activeServers.push(server);
+  await once(server, 'listening');
+  return (server.address() as AddressInfo).port;
+}
+
+async function startServerWithBuffer(buffer: InMemoryMessageWriteBuffer): Promise<number> {
+  const server = startWebSocketServer(0, prisma, { messageWritePublisher: buffer });
+  activeServers.push(server);
+  await once(server, 'listening');
+  return (server.address() as AddressInfo).port;
 }
 
 async function seedUsersAndRooms(): Promise<{
@@ -81,14 +104,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  if (!activeServer) return;
-
-  const server = activeServer;
-  activeServer = undefined;
-  server.clients.forEach((client) => client.close());
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => err ? reject(err) : resolve());
-  });
+  const servers = activeServers;
+  activeServers = [];
+  restoreRateLimitEnv();
+  await Promise.all(servers.map(async (server) => {
+    server.clients.forEach((client) => client.close());
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => err ? reject(err) : resolve());
+    });
+  }));
 });
 
 afterAll(async () => {
@@ -149,10 +173,11 @@ test('websocket ignores malformed frames until timeout without closing the conne
   expect(ws.readyState).toBe(WebSocket.OPEN);
 });
 
-test('send persists a message, updates room lastMessageAt, and returns ack', async () => {
+test('send publishes a buffered write command and returns ack without writing PostgreSQL first', async () => {
   // Arrange
   const { alice, room } = await seedUsersAndRooms();
-  const port = await startServer();
+  const buffer = new InMemoryMessageWriteBuffer();
+  const port = await startServerWithBuffer(buffer);
   const ws = await openWs(port, `token=${token(alice.id, alice.username)}`);
 
   // Act
@@ -166,20 +191,50 @@ test('send persists a message, updates room lastMessageAt, and returns ack', asy
   expect(ack).toMatchObject({ type: 'ack', request_id: 'req-1' });
   if (ack.type !== 'ack') throw new Error('expected ack');
 
-  const message = await prisma.message.findUniqueOrThrow({ where: { id: ack.message_id } });
-  const updatedRoom = await prisma.room.findUniqueOrThrow({ where: { id: room.id } });
-  expect(message.content).toBe('hello ws');
-  expect(message.senderId).toBe(alice.id);
-  expect(message.roomId).toBe(room.id);
-  expect(message.requestId).toBe('req-1');
-  expect(updatedRoom.lastMessageAt.toISOString()).toBe(message.createdAt.toISOString());
-  expect(ack.persisted_at).toBe(message.createdAt.toISOString());
+  const messageCount = await prisma.message.count({ where: { id: ack.message_id } });
+  const writeCount = await prisma.messageWrite.count({ where: { id: ack.message_id } });
+  expect(writeCount).toBe(0);
+  expect(messageCount).toBe(0);
+  expect(buffer.commands).toEqual([
+    expect.objectContaining({
+      message_id: ack.message_id,
+      request_id: 'req-1',
+      sender_id: alice.id,
+      room_id: room.id,
+      body: 'hello ws',
+      accepted_at: ack.accepted_at,
+    }),
+  ]);
+});
+
+test('send returns buffer_unavailable when no message write publisher is configured', async () => {
+  // Arrange
+  const { alice, room } = await seedUsersAndRooms();
+  const port = await startServer();
+  const ws = await openWs(port, `token=${token(alice.id, alice.username)}`);
+
+  // Act
+  sendJson(ws, { type: 'send', request_id: 'req-no-buffer', chat_id: room.id, body: 'ingress only' });
+  const frame = await waitForJsonFrame<WsServerFrame>(
+    ws,
+    (msg) => msg.type === 'error' && msg.request_id === 'req-no-buffer',
+  );
+
+  // Assert
+  expect(frame).toMatchObject({
+    type: 'error',
+    reason: 'buffer_unavailable',
+    request_id: 'req-no-buffer',
+  });
+  expect(await prisma.message.count()).toBe(0);
+  expect(await prisma.messageWrite.count()).toBe(0);
 });
 
 test('send is idempotent for duplicate request_id from the same sender', async () => {
   // Arrange
   const { alice, room } = await seedUsersAndRooms();
-  const port = await startServer();
+  const buffer = new InMemoryMessageWriteBuffer();
+  const port = await startServerWithBuffer(buffer);
   const ws = await openWs(port, `token=${token(alice.id, alice.username)}`);
 
   // Act
@@ -197,31 +252,65 @@ test('send is idempotent for duplicate request_id from the same sender', async (
   // Assert
   if (firstAck.type !== 'ack' || secondAck.type !== 'ack') throw new Error('expected ack frames');
   expect(secondAck.message_id).toBe(firstAck.message_id);
-  const messages = await prisma.message.findMany({ where: { senderId: alice.id, requestId: 'req-duplicate' } });
-  expect(messages).toHaveLength(1);
-  expect(messages[0].content).toBe('first');
+  const writes = await prisma.messageWrite.findMany({ where: { senderId: alice.id, requestId: 'req-duplicate' } });
+  expect(writes).toHaveLength(0);
+  expect(buffer.commands).toHaveLength(2);
+  expect(buffer.commands.map((command) => command.message_id)).toEqual([firstAck.message_id, firstAck.message_id]);
 });
 
-test('send broadcasts msg to same-room clients only', async () => {
+test('send returns rate_limited when the local websocket limit is exceeded', async () => {
+  // Arrange
+  process.env.WS_RATE_LIMIT_MODE = 'local';
+  process.env.WS_SEND_RATE_LIMIT_PER_SEC = '1';
+  const { alice, room } = await seedUsersAndRooms();
+  const buffer = new InMemoryMessageWriteBuffer();
+  const port = await startServerWithBuffer(buffer);
+  const ws = await openWs(port, `token=${token(alice.id, alice.username)}`);
+
+  // Act
+  sendJson(ws, { type: 'send', request_id: 'req-rate-1', chat_id: room.id, body: 'first' });
+  const ack = await waitForJsonFrame<WsServerFrame>(
+    ws,
+    (frame) => frame.type === 'ack' && frame.request_id === 'req-rate-1',
+  );
+  sendJson(ws, { type: 'send', request_id: 'req-rate-2', chat_id: room.id, body: 'second' });
+  const error = await waitForJsonFrame<WsServerFrame>(
+    ws,
+    (frame) => frame.type === 'error' && frame.reason === 'rate_limited',
+  );
+
+  // Assert
+  expect(ack).toMatchObject({ type: 'ack', request_id: 'req-rate-1' });
+  expect(error).toMatchObject({ type: 'error', reason: 'rate_limited' });
+  expect(buffer.commands).toHaveLength(1);
+});
+
+test('redis room events broadcast msg to same-room clients only', async () => {
   // Arrange
   const { alice, bob, carol, room } = await seedUsersAndRooms();
-  const port = await startServer();
+  const redis = new FakeRedis();
+  const port = await startServerWithRedis(redis);
   const aliceWs = await openWs(port, `token=${token(alice.id, alice.username)}`);
   const bobWs = await openWs(port, `token=${token(bob.id, bob.username)}`);
   const carolWs = await openWs(port, `token=${token(carol.id, carol.username)}`);
 
   // Act
-  sendJson(aliceWs, { type: 'send', request_id: 'req-broadcast', chat_id: room.id, body: 'fan out' });
-  const [bobFrame] = await Promise.all([
-    waitForJsonFrame<WsServerFrame>(
-      bobWs,
-      (frame) => frame.type === 'msg' && frame.message.body === 'fan out',
-    ),
-    waitForJsonFrame<WsServerFrame>(
-      aliceWs,
-      (frame) => frame.type === 'ack' && frame.request_id === 'req-broadcast',
-    ),
-  ]);
+  await redis.publish(roomEventChannel(room.id), JSON.stringify({
+    type: 'message.created',
+    room_id: room.id,
+    message: {
+      id: 'msg-broadcast',
+      chat_id: room.id,
+      sender_id: alice.id,
+      type: 'TEXT',
+      body: 'fan out',
+      created_at: '2026-05-30T11:00:00.000Z',
+    },
+  }));
+  const bobFrame = await waitForJsonFrame<WsServerFrame>(
+    bobWs,
+    (frame) => frame.type === 'msg' && frame.message.body === 'fan out',
+  );
 
   // Assert
   expect(bobFrame).toMatchObject({
@@ -235,6 +324,20 @@ test('send broadcasts msg to same-room clients only', async () => {
   await expectNoMessage(carolWs);
 });
 
+function restoreRateLimitEnv(): void {
+  if (originalRateLimitMode === undefined) {
+    delete process.env.WS_RATE_LIMIT_MODE;
+  } else {
+    process.env.WS_RATE_LIMIT_MODE = originalRateLimitMode;
+  }
+
+  if (originalSendRateLimit === undefined) {
+    delete process.env.WS_SEND_RATE_LIMIT_PER_SEC;
+  } else {
+    process.env.WS_SEND_RATE_LIMIT_PER_SEC = originalSendRateLimit;
+  }
+}
+
 test('send from a non-member returns forbidden and does not persist a message', async () => {
   // Arrange
   const { carol, room } = await seedUsersAndRooms();
@@ -246,9 +349,37 @@ test('send from a non-member returns forbidden and does not persist a message', 
   const frame = await waitForJsonFrame<WsServerFrame>(carolWs, (msg) => msg.type === 'error');
 
   // Assert
-  expect(frame).toMatchObject({ type: 'error', reason: 'forbidden' });
+  expect(frame).toMatchObject({ type: 'error', reason: 'forbidden', request_id: 'req-forbidden' });
   const messageCount = await prisma.message.count({ where: { roomId: room.id } });
   expect(messageCount).toBe(0);
+});
+
+test('send returns a request-scoped error when buffer enqueue fails', async () => {
+  // Arrange
+  const { alice, room } = await seedUsersAndRooms();
+  const failingBuffer = new InMemoryMessageWriteBuffer(() => {
+    throw new Error('jetstream unavailable');
+  });
+  const port = await startServerWithBuffer(failingBuffer);
+  const ws = await openWs(port, `token=${token(alice.id, alice.username)}`);
+
+  // Act
+  sendJson(ws, { type: 'send', request_id: 'req-buffer-fail', chat_id: room.id, body: 'will fail' });
+  const frame = await waitForJsonFrame<WsServerFrame>(
+    ws,
+    (msg) => msg.type === 'error' && msg.request_id === 'req-buffer-fail',
+  );
+
+  // Assert
+  expect(frame).toMatchObject({
+    type: 'error',
+    reason: 'buffer_unavailable',
+    request_id: 'req-buffer-fail',
+  });
+  const writeCount = await prisma.messageWrite.count({
+    where: { senderId: alice.id, requestId: 'req-buffer-fail' },
+  });
+  expect(writeCount).toBe(0);
 });
 
 test('typing is relayed to room members only', async () => {
@@ -314,4 +445,79 @@ test('newly connected client receives presence for already-online room members',
   );
 
   expect(frame).toEqual({ type: 'presence', user_id: alice.id, online: true });
+});
+
+test('redis pubsub relays messages between websocket server instances', async () => {
+  // Arrange
+  const { alice, bob, room } = await seedUsersAndRooms();
+  const redis = new FakeRedis();
+  const alicePort = await startServerWithRedis(redis);
+  const bobPort = await startServerWithRedis(redis);
+  const bobWs = await openWs(bobPort, `token=${token(bob.id, bob.username)}`);
+  await openWs(alicePort, `token=${token(alice.id, alice.username)}`);
+  await waitForJsonFrame<WsServerFrame>(
+    bobWs,
+    (frame) => frame.type === 'presence' && frame.user_id === alice.id && frame.online,
+    'bob indexed before cross-instance message',
+    1000,
+  );
+
+  // Act
+  await redis.publish(roomEventChannel(room.id), JSON.stringify({
+    type: 'message.created',
+    room_id: room.id,
+    message: {
+      id: 'msg-cross-instance',
+      chat_id: room.id,
+      sender_id: alice.id,
+      type: 'TEXT',
+      body: 'cross instance',
+      created_at: '2026-05-30T11:00:00.000Z',
+    },
+  }));
+  const bobFrame = await waitForJsonFrame<WsServerFrame>(
+    bobWs,
+    (frame) => frame.type === 'msg' && frame.message.body === 'cross instance',
+    'cross instance msg',
+    1000,
+  );
+
+  // Assert
+  expect(bobFrame).toMatchObject({
+    type: 'msg',
+    message: {
+      chat_id: room.id,
+      sender_id: alice.id,
+      body: 'cross instance',
+    },
+  });
+});
+
+test('redis presence relays online and offline frames between websocket server instances', async () => {
+  // Arrange
+  const { alice, bob } = await seedUsersAndRooms();
+  const redis = new FakeRedis();
+  const alicePort = await startServerWithRedis(redis);
+  const bobPort = await startServerWithRedis(redis);
+  const aliceWs = await openWs(alicePort, `token=${token(alice.id, alice.username)}`);
+
+  // Act
+  const bobWs = await openWs(bobPort, `token=${token(bob.id, bob.username)}`);
+  const onlineFrame = await waitForJsonFrame<WsServerFrame>(
+    aliceWs,
+    (frame) => frame.type === 'presence' && frame.user_id === bob.id && frame.online,
+    'cross instance online',
+    1000,
+  );
+  bobWs.close();
+  const offlineFrame = await waitForJsonFrame<WsServerFrame>(
+    aliceWs,
+    (frame) => frame.type === 'presence' && frame.user_id === bob.id && !frame.online,
+    'cross instance offline',
+    1000,
+  );
+
+  // Assert
+  expect(onlineFrame).toEqual({ type: 'presence', user_id: bob.id, online: true });
+  expect(offlineFrame).toEqual({ type: 'presence', user_id: bob.id, online: false });
 });

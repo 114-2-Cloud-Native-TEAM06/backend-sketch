@@ -1,104 +1,4 @@
 services:
-  chat-service:
-    image: backend-sketch-backend-dev
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    command: npx tsx watch services/chat-service/src/main.ts
-    ports:
-      - "8080:8080"   # chat-service REST
-    volumes:
-      - ./backend:/app        # 本機 code → container，改檔案即時生效
-      - /app/node_modules     # node_modules 不被本機蓋掉
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev_secret_change_in_prod
-      - API_VERSION=1
-      - CHAT_SERVICE_PORT=8080
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  user-service:
-    image: backend-sketch-backend-dev
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    command: npx tsx watch services/user-service/src/main.ts
-    ports:
-      - "8082:8082"   # user-service REST
-      - "5555:5555"   # Prisma Studio
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev_secret_change_in_prod
-      - API_VERSION=1
-      - USER_SERVICE_PORT=8082
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  realtime-service:
-    image: backend-sketch-backend-dev
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    command: npx tsx watch services/realtime-service/src/main.ts
-    ports:
-      - "8081:8081"   # WebSocket
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev_secret_change_in_prod
-      - WS_PORT=8081
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  notification-service:
-    image: backend-sketch-backend-dev
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    command: npx tsx watch services/notification-service/src/main.ts
-    ports:
-      - "8083:8083"   # notification-service health
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev_secret_change_in_prod
-      - API_VERSION=1
-      - NOTIFICATION_SERVICE_PORT=8083
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
   test:
     image: backend-sketch-backend-dev
     build:
@@ -111,7 +11,8 @@ services:
     environment:
       - NODE_ENV=test
       - DATABASE_URL=postgresql://admin:password@postgres-test:5432/imdb_test
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis-test:6379
+      - NATS_URL=nats://nats-test:4222
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
       - CHAT_SERVICE_PORT=8080
@@ -121,6 +22,35 @@ services:
     depends_on:
       postgres-test:
         condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      nats-test:
+        condition: service_healthy
+    profiles:
+      - test
+
+  nats-test:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    tmpfs:
+      - /tmp/nats
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
+  redis-test:
+    image: redis:7-alpine
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     profiles:
       - test
 
@@ -139,35 +69,3 @@ services:
       retries: 5
     profiles:
       - test
-
-  postgres:
-    image: postgres:16-alpine
-    ports:
-      - "5432:5432"           # 本機可用 DBeaver / psql 直連
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: imdb
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d imdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"           # 本機可用 RedisInsight 直連
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-  redis_data:

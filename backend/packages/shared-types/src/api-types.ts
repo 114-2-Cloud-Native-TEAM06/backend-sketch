@@ -31,6 +31,7 @@ export interface Message {
   type:       MessageType;
   body:       string;
   created_at: Iso8601;
+  delivery_status?: 'sending' | 'sent' | 'failed';
 }
 
 export interface Chat {
@@ -113,16 +114,17 @@ export type WsClientFrame =
   | { type: 'ping' };
 
 export type WsServerFrame =
-  | { type: 'ack';      request_id: Ulid; message_id: MessageId; persisted_at: Iso8601 }
+  | { type: 'ack';      request_id: Ulid; message_id: MessageId; accepted_at: Iso8601 }
   | { type: 'msg';      message: Message }
   | { type: 'typing';   chat_id: ChatId; user_id: UserId; is_typing: boolean }
   | { type: 'presence'; user_id: UserId; online: boolean }
-  | { type: 'error';    reason: WsErrorReason; detail?: string }
+  | { type: 'error';    reason: WsErrorReason; request_id?: Ulid; detail?: string }
   | { type: 'pong' };
 
 export type WsErrorReason =
   | 'unknown_op'
   | 'rate_limited'
+  | 'buffer_unavailable'
   | 'forbidden'
   | 'validation_failed'
   | 'auth_expired';

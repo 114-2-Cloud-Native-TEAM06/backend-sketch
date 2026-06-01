@@ -32,6 +32,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .cache/
 .parcel-cache
 .tsbuildinfo
+backend/load-tests/generated/
 
 # IDE/Editor folders
 .vscode/
@@ -42,3 +43,11 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 *.env*
 CLAUDE.md
 AGENTS.md
+
+# Local planning and analysis notes
+findings.md
+load-test-report.md
+plan.md
+problem.md
+progress.md
+task_plan.md

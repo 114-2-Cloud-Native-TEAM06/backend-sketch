@@ -1,0 +1,26 @@
+name: backend-sketch-redis
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - backend-sketch-net
+
+volumes:
+  redis_data:
+    name: backend-sketch-redis-data
+
+networks:
+  backend-sketch-net:
+    name: backend-sketch-net
+    external: true

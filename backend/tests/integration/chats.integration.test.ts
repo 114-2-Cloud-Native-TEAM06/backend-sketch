@@ -148,6 +148,7 @@ test('rejects an empty message body before creating a message row', async () => 
   const room = await prisma.room.create({
     data: {
       isGroup: false,
+      lastMessageAt: new Date('2026-05-30T10:00:00.000Z'),
       members: { create: [{ userId: alice.id }] },
     },
   });
@@ -197,6 +198,7 @@ test('rejects non-member message access without returning room messages', async 
         create: {
           content: 'private message',
           senderId: alice.id,
+          roomSequence: 1,
         },
       },
     },
@@ -239,6 +241,7 @@ test('rejects access to another user chat detail', async () => {
   const room = await prisma.room.create({
     data: {
       isGroup: false,
+      lastMessageAt: new Date('2026-05-30T10:00:00.000Z'),
       members: { create: [{ userId: alice.id }] },
     },
   });
@@ -353,6 +356,7 @@ test('reads older messages using before_message_id cursor pagination', async () 
       senderId: alice.id,
       content: 'older',
       createdAt: new Date('2026-05-07T10:00:00.000Z'),
+      roomSequence: 1,
     },
   });
   const newer = await prisma.message.create({
@@ -361,6 +365,7 @@ test('reads older messages using before_message_id cursor pagination', async () 
       senderId: alice.id,
       content: 'newer',
       createdAt: new Date('2026-05-07T10:01:00.000Z'),
+      roomSequence: 2,
     },
   });
 
@@ -453,3 +458,112 @@ test('lists chats with the asynchronously persisted latest message', async () =>
     },
   });
 });
+
+test('reads pending message writes together with persisted chat history', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const room = await prisma.room.create({
+    data: {
+      isGroup: false,
+      members: { create: [{ userId: alice.id }] },
+      messages: {
+        create: {
+          id: 'persisted-msg',
+          senderId: alice.id,
+          content: 'persisted',
+          createdAt: new Date('2026-05-30T10:00:00.000Z'),
+          roomSequence: 1,
+        },
+      },
+    },
+  });
+  await prisma.messageWrite.create({
+    data: {
+      id: 'pending-msg',
+      requestId: 'req-pending',
+      senderId: alice.id,
+      roomId: room.id,
+      content: 'pending',
+      acceptedAt: new Date('2026-05-30T10:01:00.000Z'),
+    },
+  });
+
+  // Act
+  const res = await requestJson<Array<{ id: string; body: string; delivery_status?: string }>>(
+    createChatRouter(prisma),
+    `/${room.id}/messages`,
+    { headers: authHeaders(alice.id, alice.username) },
+  );
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(res.body).toEqual([
+    expect.objectContaining({ id: 'pending-msg', body: 'pending', delivery_status: 'sent' }),
+    expect.objectContaining({ id: 'persisted-msg', body: 'persisted' }),
+  ]);
+});
+
+test('lists chats using pending message writes for latest message ordering', async () => {
+  // Arrange
+  const alice = await prisma.user.create({
+    data: {
+      username: 'alice',
+      email: 'alice@example.com',
+      displayName: 'Alice',
+      password: 'hashed-password',
+    },
+  });
+  const olderRoom = await prisma.room.create({
+    data: {
+      isGroup: true,
+      name: 'Older',
+      lastMessageAt: new Date('2026-05-30T09:00:00.000Z'),
+      members: { create: [{ userId: alice.id }] },
+      messages: {
+        create: {
+          senderId: alice.id,
+          content: 'old persisted',
+          createdAt: new Date('2026-05-30T09:00:00.000Z'),
+          roomSequence: 1,
+        },
+      },
+    },
+  });
+  const pendingRoom = await prisma.room.create({
+    data: {
+      isGroup: true,
+      name: 'Pending',
+      lastMessageAt: new Date('2026-05-30T08:00:00.000Z'),
+      members: { create: [{ userId: alice.id }] },
+    },
+  });
+  await prisma.messageWrite.create({
+    data: {
+      requestId: 'req-latest-pending',
+      senderId: alice.id,
+      roomId: pendingRoom.id,
+      content: 'latest pending',
+      acceptedAt: new Date('2026-05-30T10:00:00.000Z'),
+    },
+  });
+
+  // Act
+  const res = await requestJson<Array<{ id: string; last_message?: { body: string } }>>(
+    createChatRouter(prisma),
+    '/',
+    { headers: authHeaders(alice.id, alice.username) },
+  );
+
+  // Assert
+  expect(res.status).toBe(200);
+  expect(res.body.map((chat) => chat.id)).toEqual([pendingRoom.id, olderRoom.id]);
+  expect(res.body[0].last_message?.body).toBe('latest pending');
+});
+

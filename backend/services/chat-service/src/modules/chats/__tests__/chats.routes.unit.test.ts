@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { createChatRouter } from '../chats.routes.js';
 import { requestJson } from '../../../../../../tests/helpers/request-json.js';
+import { FakeRedis, ROOM_EVENT_PATTERN, parseRoomEvent } from '../../../../../../packages/shared-redis/src/index.js';
 
 process.env.JWT_SECRET = 'unit-test-secret';
 
@@ -258,10 +259,16 @@ test('GET /:chatId/messages caps requested page size at 100', async () => {
 test('POST /:chatId/messages trims content, persists the message, and updates room order timestamp', async () => {
   // Arrange
   const createdAt = new Date('2026-05-07T10:00:00.000Z');
-  let createdMessageData: { content: string; senderId: string; roomId: string } | undefined;
+  let createdMessageData: { content: string; senderId: string; roomId: string; roomSequence: bigint } | undefined;
   let roomUpdateData: { lastMessageAt: Date } | undefined;
 
   const prisma = {
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    $queryRaw: async () => [{ nextMessageSeq: 1n }],
+    $executeRaw: async (_strings: TemplateStringsArray, lastMessageAt: Date) => {
+      roomUpdateData = { lastMessageAt };
+      return 1;
+    },
     roomMember: {
       findUnique: async (args: { where: { userId_roomId: { userId: string; roomId: string } } }) => {
         expect(args.where.userId_roomId).toEqual({ userId: 'user-1', roomId: 'room-1' });
@@ -269,7 +276,7 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
       },
     },
     message: {
-      create: async (args: { data: { content: string; senderId: string; roomId: string } }) => {
+      create: async (args: { data: { content: string; senderId: string; roomId: string; roomSequence: bigint } }) => {
         createdMessageData = args.data;
         return {
           id: 'msg-1',
@@ -281,8 +288,8 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
       },
     },
     room: {
-      update: async (args: { data: { lastMessageAt: Date } }) => {
-        roomUpdateData = args.data;
+      update: async (args: { data: { nextMessageSeq: { increment: number } } }) => {
+        expect(args.data).toEqual({ nextMessageSeq: { increment: 1 } });
         return {};
       },
     },
@@ -301,7 +308,7 @@ test('POST /:chatId/messages trims content, persists the message, and updates ro
 
   // Assert
   expect(res.status).toBe(201);
-  expect(createdMessageData).toEqual({ content: 'hello', senderId: 'user-1', roomId: 'room-1' });
+  expect(createdMessageData).toEqual({ content: 'hello', senderId: 'user-1', roomId: 'room-1', roomSequence: 1n });
   expect(roomUpdateData).toEqual({ lastMessageAt: createdAt });
   expect(res.body).toEqual({
     id: 'msg-1',
@@ -318,6 +325,14 @@ test('POST /:chatId/messages waits for asynchronous room timestamp update before
   const createdAt = new Date('2026-05-07T10:00:00.000Z');
   let updateFinished = false;
   const prisma = {
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    $queryRaw: async () => [{ nextMessageSeq: 1n }],
+    $executeRaw: async () => new Promise((resolve) => {
+      setTimeout(() => {
+        updateFinished = true;
+        resolve(1);
+      }, 10);
+    }),
     roomMember: {
       findUnique: async () => ({ userId: 'user-1', roomId: 'room-1' }),
     },
@@ -331,12 +346,7 @@ test('POST /:chatId/messages waits for asynchronous room timestamp update before
       }),
     },
     room: {
-      update: async () => new Promise((resolve) => {
-        setTimeout(() => {
-          updateFinished = true;
-          resolve({});
-        }, 10);
-      }),
+      update: async () => ({}),
     },
   };
 
@@ -350,4 +360,65 @@ test('POST /:chatId/messages waits for asynchronous room timestamp update before
   // Assert
   expect(res.status).toBe(201);
   expect(updateFinished).toBe(true);
+});
+
+test('POST /:chatId/messages caches idempotent request ids and publishes created message events', async () => {
+  // Arrange
+  const createdAt = new Date('2026-05-07T10:00:00.000Z');
+  const redis = new FakeRedis();
+  const receivedEvents: string[] = [];
+  let createCount = 0;
+  await redis.pSubscribe(ROOM_EVENT_PATTERN, (message) => {
+    receivedEvents.push(message);
+  });
+
+  const prisma = {
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    $queryRaw: async () => [{ nextMessageSeq: 1n }],
+    $executeRaw: async () => 1,
+    roomMember: {
+      findUnique: async () => ({ userId: 'user-1', roomId: 'room-1' }),
+    },
+    message: {
+      create: async () => {
+        createCount += 1;
+        return {
+          id: 'msg-1',
+          content: 'hello',
+          createdAt,
+          senderId: 'user-1',
+          roomId: 'room-1',
+        };
+      },
+    },
+    room: {
+      update: async () => ({}),
+    },
+  };
+  const router = createChatRouter(prisma as never, { redis, publisher: redis });
+
+  // Act
+  const first = await requestJson(router, '/room-1/messages', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ body: 'hello', request_id: 'req-1' }),
+  });
+  const second = await requestJson(router, '/room-1/messages', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ body: 'ignored duplicate body', request_id: 'req-1' }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Assert
+  expect(first.status).toBe(201);
+  expect(second.status).toBe(201);
+  expect(createCount).toBe(1);
+  expect(first.body).toEqual(second.body);
+  expect(receivedEvents).toHaveLength(1);
+  expect(parseRoomEvent(receivedEvents[0])).toMatchObject({
+    type: 'message.created',
+    room_id: 'room-1',
+    message: { id: 'msg-1', body: 'hello' },
+  });
 });

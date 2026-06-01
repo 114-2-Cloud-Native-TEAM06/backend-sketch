@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import authMiddleware from '../../../../../packages/shared-auth/src/auth-middleware.js';
 import type { CreateChatRequest } from '../../../../../packages/shared-types/src/api-types.js';
+import type { RedisLike } from '../../../../../packages/shared-redis/src/index.js';
 import {
   createChat,
   createMessage,
@@ -12,7 +13,15 @@ import {
   sendTyping,
 } from './chats.service.js';
 
-export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Router {
+export interface ChatRouterDependencies {
+  redis?: RedisLike;
+  publisher?: RedisLike;
+}
+
+export function createChatRouter(
+  prisma: PrismaClient = new PrismaClient(),
+  deps: ChatRouterDependencies = {},
+): Router {
   const router = Router();
 
   router.get('/', authMiddleware, async (req: Request, res: Response): Promise<void> => {
@@ -51,7 +60,7 @@ export function createChatRouter(prisma: PrismaClient = new PrismaClient()): Rou
       chatId: req.params.chatId,
       body: req.body.body,
       requestId: req.body.request_id,
-    });
+    }, deps);
     res.status(201).json(msg);
   });
 

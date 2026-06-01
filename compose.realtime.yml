@@ -1,0 +1,31 @@
+name: backend-sketch-realtime
+
+services:
+  realtime-service:
+    image: backend-sketch-backend-dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    command: npx tsx watch services/realtime-service/src/main.ts
+    ports:
+      - "${WS_HOST_PORT:-8081}:8081"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://admin:password@postgres:5432/imdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_prod}
+      WS_PORT: ${WS_PORT:-8081}
+      REALTIME_DISABLE_NATS_PUBLISH: ${REALTIME_DISABLE_NATS_PUBLISH:-false}
+      LOAD_METRICS_LOG_INTERVAL_MS: ${LOAD_METRICS_LOG_INTERVAL_MS:-5000}
+    restart: unless-stopped
+    networks:
+      - backend-sketch-net
+
+networks:
+  backend-sketch-net:
+    name: backend-sketch-net
+    external: true
