@@ -1,7 +1,8 @@
 # 可觀測訊號對照表（SIGNALS）
 
 這份是「**有哪些資料可以觀測，分別對應哪些事件、從哪裡產生**」的查詢手冊。
-搭配 [OBSERVABILITY.md](../OBSERVABILITY.md)（計畫 + 部署 runbook）一起看。
+- 怎麼從零啟動 + 跑壓測 + 在 Grafana 輸入什麼 → [QUICKSTART.md](QUICKSTART.md)
+- 設計、部署、實作調整紀錄 → [../OBSERVABILITY.md](../OBSERVABILITY.md)
 
 四種訊號在 Grafana 的位置（Explore → 選資料源）：
 
