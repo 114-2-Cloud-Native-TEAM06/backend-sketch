@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type { Server as HttpServer } from 'http';
 import { PrismaClient } from '@prisma/client';
 import { parse } from 'url';
 import { JSONCodec } from 'nats';
@@ -24,11 +25,16 @@ import type { ClientState, JwtPayload, PresenceStore } from './realtime.types.js
 type RawFrame = Record<string, unknown> & { type?: unknown };
 
 export function createWebSocketServer(
-  port = Number(process.env.WS_PORT || 8081),
+  // number → standalone WS server on its own port (local dev, tests).
+  // http.Server → attach WS to an existing HTTP server on path /ws/chat
+  //               (single-port deploy, e.g. PaaS that exposes one port).
+  portOrServer: number | HttpServer = Number(process.env.WS_PORT || 8081),
   prisma: PrismaClient = new PrismaClient(),
   presenceStore: PresenceStore = new InMemoryPresenceStore(),
 ): WebSocketServer {
-  const wss = new WebSocketServer({ port });
+  const wss = typeof portOrServer === 'number'
+    ? new WebSocketServer({ port: portOrServer })
+    : new WebSocketServer({ server: portOrServer, path: '/ws/chat' });
   if (isNatsEnabled()) startMessageStatusFanout(presenceStore);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
