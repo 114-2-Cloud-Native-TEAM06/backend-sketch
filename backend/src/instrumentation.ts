@@ -82,6 +82,8 @@ if (PROFILING_ENABLED) {
         stop: () => Promise<void>;
       };
       console.log(`[instrumentation] pyroscope module keys: ${Object.keys(p).join(',')}`);
+      // Surface the SDK's own upload errors (e.g. 401 on bad Grafana Cloud auth).
+      (p as { setLogger?: (l: unknown) => void }).setLogger?.(console);
       p.init({
         serverAddress: PYROSCOPE_ENDPOINT,
         appName: SERVICE_NAME,
