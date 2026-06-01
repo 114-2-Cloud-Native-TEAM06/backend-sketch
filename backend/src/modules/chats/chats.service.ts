@@ -26,10 +26,12 @@ type MessageRow = {
 };
 
 export interface CreateMessageInput {
+  messageId?: string;
   senderId: string;
   chatId: string;
   body: string;
   requestId?: string;
+  createdAt?: Date;
 }
 
 function toUserDto(row: {
@@ -223,10 +225,12 @@ export async function createMessage(
   let msg: MessageRow;
   try {
     msg = await createMessageRow(prisma, {
+      id: input.messageId,
       content: trimmedBody,
       senderId: input.senderId,
       roomId: input.chatId,
       requestId: input.requestId,
+      createdAt: input.createdAt,
     });
   } catch (err) {
     if (!input.requestId || !isUniqueRequestIdError(err)) throw err;

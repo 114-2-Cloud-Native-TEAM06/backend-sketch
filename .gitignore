@@ -19,6 +19,8 @@ dist/
 build/
 coverage/
 backend/coverage/
+load/reports/*
+!load/reports/.gitkeep
 .next/
 .nuxt/
 out/

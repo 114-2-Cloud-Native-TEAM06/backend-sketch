@@ -130,14 +130,16 @@ export function findMessages(
 
 export function createMessageRow(
   prisma: PrismaClient,
-  input: { senderId: string; roomId: string; content: string; requestId?: string },
+  input: { id?: string; senderId: string; roomId: string; content: string; requestId?: string; createdAt?: Date },
 ) {
   return prisma.message.create({
     data: {
+      ...(input.id ? { id: input.id } : {}),
       content: input.content,
       senderId: input.senderId,
       roomId: input.roomId,
       ...(input.requestId ? { requestId: input.requestId } : {}),
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     },
     select: { id: true, content: true, createdAt: true, senderId: true, roomId: true },
   });

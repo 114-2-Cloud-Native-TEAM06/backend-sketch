@@ -1,0 +1,15 @@
+WebSocket online ceiling run: oc153434
+
+Stable criteria:
+- connect_success_rate_percent >= 99
+- unexpected_close <= 0
+- pong_success_rate_percent >= 95
+- pong_p95_seconds <= 1
+
+run_id=oc153434-u100
+target_users=100
+attempts=100 connected=100 connect_success=100%
+unexpected_close=0
+ping_sent=318 pong_received=300 pong_success=94.34% pong_p95=0.01s
+stable=no
+

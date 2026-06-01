@@ -113,7 +113,8 @@ export type WsClientFrame =
   | { type: 'ping' };
 
 export type WsServerFrame =
-  | { type: 'ack';      request_id: Ulid; message_id: MessageId; persisted_at: Iso8601 }
+  | { type: 'ack';      request_id: Ulid; message_id: MessageId; persisted_at?: Iso8601; accepted_at?: Iso8601; status?: 'accepted' | 'persisted' }
+  | { type: 'message_status'; request_id: Ulid; message_id: MessageId; chat_id: ChatId; status: 'persisted' | 'failed'; persisted_at?: Iso8601; reason?: string }
   | { type: 'msg';      message: Message }
   | { type: 'typing';   chat_id: ChatId; user_id: UserId; is_typing: boolean }
   | { type: 'presence'; user_id: UserId; online: boolean }

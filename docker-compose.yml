@@ -14,6 +14,7 @@ services:
       - NODE_ENV=development
       - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
       - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
     depends_on:
@@ -21,6 +22,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      nats:
+        condition: service_started
     restart: unless-stopped
 
   test:
@@ -87,6 +90,16 @@ services:
       timeout: 5s
       retries: 5
 
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+
 volumes:
   postgres_data:
   redis_data:
+  nats_data:

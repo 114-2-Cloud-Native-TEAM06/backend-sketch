@@ -1,10 +1,23 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { PrismaClient } from '@prisma/client';
 import { parse } from 'url';
+import { JSONCodec } from 'nats';
+import { ulid } from 'ulid';
 import { AppError } from '../shared/errors/app-error.js';
 import { verifyToken } from '../shared/auth/jwt.js';
 import { createMessage } from '../chats/chats.service.js';
 import type { WsErrorReason, WsServerFrame } from '../shared/types/api-types.js';
+import {
+  getNatsConnection,
+  isNatsEnabled,
+  publishAcceptedMessage,
+} from '../messaging/nats-client.js';
+import {
+  MESSAGE_FAILED_SUBJECT,
+  MESSAGE_PERSISTED_SUBJECT,
+  type ChatMessageFailedEvent,
+  type ChatMessagePersistedEvent,
+} from '../messaging/message-events.js';
 import { InMemoryPresenceStore } from './realtime.service.js';
 import type { ClientState, JwtPayload, PresenceStore } from './realtime.types.js';
 
@@ -16,6 +29,7 @@ export function createWebSocketServer(
   presenceStore: PresenceStore = new InMemoryPresenceStore(),
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
+  if (isNatsEnabled()) startMessageStatusFanout(presenceStore);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -74,6 +88,47 @@ export function createWebSocketServer(
     }
 
     try {
+      if (isNatsEnabled()) {
+        if (!await ensureRoomIndexed(state, frame.chat_id)) {
+          sendError(state.ws, 'forbidden', 'Not a member of this chat');
+          return;
+        }
+
+        const acceptedAt = new Date().toISOString();
+        const messageId = ulid();
+        const body = frame.body.trim();
+
+        await publishAcceptedMessage({
+          event_version: 1,
+          message_id: messageId,
+          request_id: frame.request_id,
+          room_id: frame.chat_id,
+          sender_id: state.user.userId,
+          body,
+          accepted_at: acceptedAt,
+        });
+
+        sendJson(state.ws, {
+          type: 'ack',
+          request_id: frame.request_id,
+          message_id: messageId,
+          accepted_at: acceptedAt,
+          status: 'accepted',
+        });
+        presenceStore.broadcastToRoom(frame.chat_id, {
+          type: 'msg',
+          message: {
+            id: messageId,
+            chat_id: frame.chat_id,
+            sender_id: state.user.userId,
+            type: 'TEXT',
+            body,
+            created_at: acceptedAt,
+          },
+        });
+        return;
+      }
+
       const message = await createMessage(prisma, {
         senderId: state.user.userId,
         chatId: frame.chat_id,
@@ -217,6 +272,49 @@ export function startWebSocketServer(
   const wss = createWebSocketServer(port, prisma);
   console.log(`WebSocket server running on port ${port}`);
   return wss;
+}
+
+function startMessageStatusFanout(presenceStore: PresenceStore): void {
+  const jc = JSONCodec<ChatMessagePersistedEvent | ChatMessageFailedEvent>();
+
+  void (async () => {
+    const nc = await getNatsConnection();
+
+    const persistedSub = nc.subscribe(`${MESSAGE_PERSISTED_SUBJECT}.*`);
+    const failedSub = nc.subscribe(`${MESSAGE_FAILED_SUBJECT}.*`);
+
+    console.log('NATS message status fanout started.');
+
+    void (async () => {
+      for await (const msg of persistedSub) {
+        const event = jc.decode(msg.data) as ChatMessagePersistedEvent;
+        presenceStore.broadcastToRoom(event.room_id, {
+          type: 'message_status',
+          request_id: event.request_id,
+          message_id: event.message_id,
+          chat_id: event.room_id,
+          status: 'persisted',
+          persisted_at: event.persisted_at,
+        });
+      }
+    })();
+
+    void (async () => {
+      for await (const msg of failedSub) {
+        const event = jc.decode(msg.data) as ChatMessageFailedEvent;
+        presenceStore.broadcastToRoom(event.room_id, {
+          type: 'message_status',
+          request_id: event.request_id,
+          message_id: event.message_id,
+          chat_id: event.room_id,
+          status: 'failed',
+          reason: event.reason,
+        });
+      }
+    })();
+  })().catch((err) => {
+    console.error('NATS message status fanout failed to start:', err);
+  });
 }
 
 function mapAppErrorToWsReason(err: AppError): WsErrorReason {
