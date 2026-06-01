@@ -61,20 +61,29 @@ sdk.start();
 // container, and a profiling failure must never take down the app.
 let stopProfiling: (() => Promise<void>) | undefined;
 if (PROFILING_ENABLED) {
+  /* eslint-disable no-console -- bootstrap diagnostics, logger not wired yet */
   import('@pyroscope/nodejs')
-    .then(({ default: Pyroscope }) => {
-      Pyroscope.init({
+    .then((mod) => {
+      const Pyroscope = (mod as { default?: unknown }).default ?? mod;
+      const p = Pyroscope as Record<string, unknown> & {
+        init: (c: unknown) => void;
+        start: () => void;
+        stop: () => Promise<void>;
+      };
+      console.log(`[instrumentation] pyroscope module keys: ${Object.keys(p).join(',')}`);
+      p.init({
         serverAddress: PYROSCOPE_ENDPOINT,
         appName: SERVICE_NAME,
         tags: { service_name: SERVICE_NAME },
       });
-      Pyroscope.start();
-      stopProfiling = () => Pyroscope.stop();
+      p.start();
+      console.log(`[instrumentation] pyroscope STARTED → ${PYROSCOPE_ENDPOINT} app=${SERVICE_NAME}`);
+      stopProfiling = () => p.stop();
     })
     .catch((err: unknown) => {
-      // eslint-disable-next-line no-console -- logger not yet wired at bootstrap
-      console.warn('[instrumentation] profiling disabled:', (err as Error).message);
+      console.error('[instrumentation] profiling disabled:', (err as Error).message, (err as Error).stack);
     });
+  /* eslint-enable no-console */
 }
 
 // ─── Telemetry shutdown ───────────────────────────────────────────────────────
