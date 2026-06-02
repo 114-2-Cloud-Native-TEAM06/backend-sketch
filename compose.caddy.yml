@@ -24,6 +24,7 @@ services:
       DOMAIN: ${DOMAIN:?set DOMAIN to your domain, e.g. im.example.com}
     volumes:
       - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${FRONTEND_DIST:-./frontend-dist}:/srv/frontend:ro   # built React SPA
       - caddy-data:/data       # persists issued certificates across restarts
       - caddy-config:/config
     depends_on:

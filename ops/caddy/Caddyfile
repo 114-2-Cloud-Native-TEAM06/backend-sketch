@@ -1,15 +1,15 @@
-# Public HTTPS entrypoint for the IM microservices (Plan A — single VM).
+# Public HTTPS entrypoint for the IM system (Plan A — single VM).
 #
-# Caddy terminates TLS and automatically obtains + renews a Let's Encrypt
-# certificate for $DOMAIN, then path-routes to each backend service over the
-# internal compose network. REST and WSS therefore share ONE https domain.
+# Caddy terminates TLS (auto Let's Encrypt for $DOMAIN) and:
+#   - serves the React SPA (static build) at /
+#   - path-routes /api/v1/* and /ws/chat* to the backend microservices
+# Frontend and API share ONE origin, so the browser needs no CORS.
 #
-# Set DOMAIN in the environment (compose passes it in) and point that domain's
-# DNS A record at this host's public IP before starting Caddy.
+# Set DOMAIN in the environment and point its DNS A record at this host.
+# Mount the built SPA at /srv/frontend (see compose.caddy.yml + FRONTEND_DIST).
 
 {$DOMAIN} {
-	# WebSocket → realtime-gateway (nginx) which load-balances realtime-service-1/-2.
-	# Caddy detects the Upgrade header and proxies the WS connection transparently.
+	# WebSocket → realtime-gateway (load-balances realtime-service-1/-2).
 	handle /ws/chat* {
 		reverse_proxy realtime-gateway:8081
 	}
@@ -32,8 +32,16 @@
 		reverse_proxy notification-service:8083
 	}
 
-	# Everything else (e.g. /health, root) → chat-service
-	handle {
+	# Backend health probe (kept off the SPA so uptime checks hit the API)
+	handle /health {
 		reverse_proxy chat-service:8080
+	}
+
+	# Everything else → the React SPA. try_files falls back to index.html so
+	# client-side routes (e.g. /chat/123) load the app instead of 404.
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
 	}
 }

@@ -50,3 +50,6 @@ AGENT.md
 task_plan.md
 findings.md
 progress.md
+
+# Built frontend SPA served by Caddy (Plan A single-VM deploy)
+frontend-dist/
