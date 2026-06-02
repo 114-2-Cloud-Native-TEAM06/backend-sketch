@@ -4,15 +4,26 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "nodemon --ext ts,js,json --exec tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "dev:all": "tsx watch src/index.ts",
+    "dev:chat": "tsx watch services/chat-service/src/main.ts",
+    "dev:user": "tsx watch services/user-service/src/main.ts",
+    "dev:realtime": "tsx watch services/realtime-service/src/main.ts",
+    "dev:writer": "tsx watch services/message-writer-service/src/main.ts",
+    "dev:notification": "tsx watch services/notification-service/src/main.ts",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --config vitest.unit.config.ts --coverage && vitest run --config vitest.integration.config.ts --coverage",
+    "load:seed": "tsx scripts/seed-load-test.ts",
+    "load:ws": "docker run --rm -i --network host -v ./load-tests:/scripts grafana/k6 run /scripts/ws-1000-msgs.k6.js",
+    "load:ws:bounded": "docker run --rm -i --network host -v ./load-tests:/scripts grafana/k6 run /scripts/ws-bounded-pending.k6.js",
+    "load:nats": "tsx scripts/nats-load-message-writes.ts",
+    "load:snapshot": "tsx scripts/load-test-snapshot.ts",
     "start": "node --loader ts-node/esm src/index.ts",
-    "db:init": "docker compose exec app npx prisma migrate dev --name init",
-    "db:studio": "docker compose exec app npx prisma studio --hostname 0.0.0.0",
-    "db:setup": "docker compose exec app npx prisma migrate deploy && docker compose exec app npx prisma generate && docker compose restart app"
+    "db:init": "docker compose -f ../compose.api.yml exec user-service npx prisma migrate dev --name init",
+    "db:studio": "docker compose -f ../compose.api.yml exec user-service npx prisma studio --hostname 0.0.0.0",
+    "db:setup": "docker compose -f ../compose.api.yml exec user-service npx prisma migrate deploy && docker compose -f ../compose.api.yml exec user-service npx prisma generate && docker compose -f ../compose.api.yml restart user-service chat-service notification-service"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
@@ -22,7 +33,6 @@
     "jsonwebtoken": "^9.0.0",
     "nats": "^2.29.3",
     "redis": "^4.6.0",
-    "ulid": "^3.0.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {

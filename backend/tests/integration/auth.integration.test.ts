@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { createAuthRouter } from '../../src/routes/auth.js';
+import { createAuthRouter } from '../../services/user-service/src/modules/auth/auth.routes.js';
 import { requestJson } from '../helpers/request-json.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
 

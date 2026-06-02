@@ -8,4 +8,4 @@ RUN apk add --no-cache openssl
 
 RUN npm install
 
-CMD ["npx", "tsx", "watch", "src/index.ts"]
+CMD ["sh", "-c", "echo 'Set a service command in docker compose'; tail -f /dev/null"]

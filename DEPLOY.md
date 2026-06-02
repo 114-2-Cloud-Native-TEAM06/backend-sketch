@@ -1,126 +1,190 @@
-# 部署指南（Zeabur）
+# Deployment Guide
 
-把 IM 後端部署到 Zeabur，always-on 運行。每一步都列出來，照順序做。
+This repository now uses a split backend architecture. Do not deploy it as the
+old single `src/index.ts` application; that entrypoint has been removed.
 
-## 架構（要建的服務）
+## Current Services
 
+| Service | Default port | Entry point | Responsibility |
+|---|---:|---|---|
+| `chat-service` | 8080 | `services/chat-service/src/main.ts` | Chat REST APIs and REST message creation |
+| `user-service` | 8082 | `services/user-service/src/main.ts` | Auth and user REST APIs |
+| `notification-service` | 8083 | `services/notification-service/src/main.ts` | Notification API/health service |
+| `realtime-service` | 8081 | `services/realtime-service/src/main.ts` | WebSocket `/ws/chat` |
+| `message-writer-service` | internal | `services/message-writer-service/src/main.ts` | JetStream consumer that persists async message writes |
+| `postgres` | 5432 | `postgres:16-alpine` | Primary database |
+| `redis` | 6379 | `redis:7-alpine` | Presence, rate limits, idempotency cache, room fanout |
+| `nats` | 4222 / 8222 | `nats:2.10-alpine` | JetStream message-write queue and monitor |
+
+## Local Full Stack
+
+Start the default local stack:
+
+```bash
+docker compose up --build -d
 ```
-[App ×N replicas] ──→ [PostgreSQL]   (訊息 / 使用者持久化)
-       │
-       └──────────────→ [NATS (JetStream)]   (訊息非同步寫入 + 跨實例 fanout)
 
-Redis：程式碼尚未使用 → 先不部署，等用到再加。
+Apply Prisma migrations and generate the client after PostgreSQL is healthy:
+
+```bash
+docker compose exec user-service npx prisma migrate deploy
+docker compose exec user-service npx prisma generate
 ```
 
-App 對外開兩個 port：**8080(REST)** + **8081(WebSocket)**。
-NATS / Redis 皆為「設了對應的 *_URL 才啟用」，沒設就走直接寫 DB 模式。
+Health checks:
 
----
-
-## Step 0：前置
-
-- 一個 GitHub repo（已有：`114-2-Cloud-Native-TEAM06/backend-sketch`）。
-- 部署用的正式 Dockerfile（已加在 `backend/Dockerfile`）。
-- 把 `chore/zeabur-deploy` 合進 **main**（見 Step 1），Zeabur 監看 main。
-
-## Step 1：把部署分支合進 main
-
-開 PR `chore/zeabur-deploy → main` 並合併（PR 連結見本檔結尾說明 / 對話）。
-合併後 main 就有 `backend/Dockerfile` + `backend/.dockerignore`，可被 Zeabur build。
-
-> 想先測再合也可以：Zeabur 服務的 branch 先指向 `chore/zeabur-deploy`，測通後再合 main。
-
-## Step 2：Zeabur 專案 + PostgreSQL
-
-1. Zeabur → New Project。
-2. Add Service → **Marketplace → PostgreSQL**。
-3. 建好後它會提供連線字串（之後給 App 用）。
-
-## Step 3：NATS（JetStream）
-
-1. Add Service → Marketplace 找 **NATS**（若有）；或 Add Service → **Prebuilt / Docker Image** 用 `nats:2.10-alpine`。
-2. 自建時 command 設：`-js -sd /data/jetstream -m 8222`，並掛一個 **Volume** 到 `/data`（JetStream 要持久化）。
-3. 記下內網位址：`nats://<nats-service-name>.zeabur.internal:4222`。
-
-## Step 4：App 服務
-
-1. Add Service → **Git → 選 repo**，branch 選 **main**。
-2. 設定：
-   - **Root Directory** = `backend`（會用 `backend/Dockerfile`）
-   - Build 方式 = Dockerfile（Zeabur 會自動偵測）
-3. 先別急著開外網，先設好環境變數（Step 5）再 deploy。
-
-## Step 5：App 環境變數
-
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8082/health
+curl http://localhost:8083/health
+curl http://localhost:8222/healthz
 ```
-DATABASE_URL=<Zeabur Postgres 連線字串>
-NATS_URL=nats://<nats-service-name>.zeabur.internal:4222
-JWT_SECRET=<換成真正的隨機密鑰，勿用 dev 預設>
+
+WebSocket endpoint:
+
+```text
+ws://localhost:8081/ws/chat?token=<jwt>
+```
+
+## Split Compose Files
+
+The root `docker-compose.yml` is the normal local developer stack. The split
+compose files are useful when starting infrastructure and services separately:
+
+```bash
+docker network create backend-sketch-net
+docker compose -f compose.postgres.yml up -d
+docker compose -f compose.redis.yml up -d
+docker compose -f compose.nats.yml up -d
+docker compose -f compose.api.yml up --build -d
+docker compose -f compose.writer.yml up --build -d
+docker compose -f compose.realtime-2.yml up --build -d
+```
+
+Use `compose.realtime.yml` for a single realtime instance, or
+`compose.realtime-2.yml` for two realtime instances behind the nginx gateway in
+`ops/nginx/realtime-2.conf`.
+
+## Required Environment Variables
+
+All application services require:
+
+```text
+NODE_ENV=production
+DATABASE_URL=postgresql://<user>:<password>@<postgres-host>:5432/<db>
+REDIS_URL=redis://<redis-host>:6379
+JWT_SECRET=<strong-secret>
 API_VERSION=1
-# REST_PORT=8080 / WS_PORT=8081 用預設即可，可不填
-# 不要設 REDIS_URL（程式碼還沒用到）
 ```
 
-> 服務間用 `.zeabur.internal` 內網 DNS 互連。DATABASE_URL 可用 Zeabur 的變數引用功能綁定 Postgres 服務。
+NATS-backed services (`realtime-service` and `message-writer-service`) require:
 
-## Step 6：開兩個對外 port
+```text
+NATS_URL=nats://<nats-host>:4222
+```
 
-App 服務 → **Networking**：
-- 暴露 **8080** → 綁一個網域（REST API）
-- 新增暴露 **8081** → 綁另一個網域（WebSocket）
+Service ports can be overridden when needed:
 
-WS client 連 8081 那個網域（`wss://<ws-domain>/ws/chat?token=...`）。
+```text
+CHAT_SERVICE_PORT=8080
+USER_SERVICE_PORT=8082
+NOTIFICATION_SERVICE_PORT=8083
+WS_PORT=8081
+```
 
-## Step 7：部署 + 驗證
+Writer tuning variables:
 
-1. Deploy（push main 會自動觸發；首次手動 Deploy）。
-2. 看 build/runtime log：
-   - 應看到 `prisma migrate deploy` 套用 migration
-   - 看到 `REST server running` / `WebSocket server running`
-   - `NATS message DB writer started.` / `NATS message status fanout started.`（代表 NATS 接上了）
-3. 測：`curl https://<rest-domain>/health` → `{"status":"ok"}`
-4. 註冊 / 登入 / 建 chat / WS 送訊息，確認正常。
+```text
+MESSAGE_WRITER_BATCH_SIZE=250
+MESSAGE_WRITER_BATCH_FLUSH_MS=50
+MESSAGE_WRITER_BATCH_CONCURRENCY=4
+MESSAGE_WRITER_MAX_MESSAGES=512
+MESSAGE_WRITE_MAX_ACK_PENDING=4096
+MESSAGE_WRITE_MAX_DELIVER=5
+MESSAGE_WRITE_ACK_WAIT_MS=30000
+MESSAGE_WRITER_DISABLE_FANOUT=false
+```
 
-## Step 8：水平擴展（為 10 萬 DAU）
+Set `MESSAGE_WRITER_DISABLE_FANOUT=false` when the writer should drain
+`MessageOutbox` and publish `message.created` events to Redis for realtime
+instances. The local default currently disables writer fanout in the main
+compose file unless this environment variable is overridden.
 
-App 服務 → 設 **replicas ≥ 2**。多實例都連同一個 Postgres + NATS。
-- NATS 負責跨實例的訊息 pipeline + status fanout。
-- **要驗證**：A 實例的使用者發訊息，連在 B 實例的同房使用者是否即時收到 `msg`
-  （目前 `handleSend` 的即時 `msg` 廣播是本機 socket；跨實例靠 `message_status` 事件補，多實例即時性請實測）。
+## Production Deployment Shape
 
----
+Deploy these as separate processes or containers:
 
-## 之後的增量（不阻塞現在部署）
+1. PostgreSQL
+2. Redis
+3. NATS with JetStream enabled
+4. `user-service`
+5. `chat-service`
+6. `notification-service`
+7. one or more `realtime-service` replicas
+8. one or more `message-writer-service` replicas
 
-### 加上可觀測性（送 Grafana Cloud）
-1. 把 `feat/observability` 合進 main → Zeabur 自動重新部署。
-2. App 補環境變數：
-   ```
-   OTEL_SERVICE_NAME=im-backend
-   OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<region>.grafana.net/otlp
-   OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <base64(instanceID:token)>
-   OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-   PYROSCOPE_SERVER_ADDRESS=https://profiles-prod-<region>.grafana.net
-   PYROSCOPE_BASIC_AUTH_USER=<Pyroscope instance ID>
-   PYROSCOPE_BASIC_AUTH_PASSWORD=<含 profiles:write 的 token>
-   ```
-3. 資料開始持續進 Grafana Cloud（即使你的 localhost 關掉）。
-   - 細節見 [observability/QUICKSTART.md](observability/QUICKSTART.md)（在 feat/observability 分支）。
+Expose only the public application ports:
 
-### 加 Redis（等程式碼用到再做）
-1. Zeabur 一鍵加 Redis 服務。
-2. App 設 `REDIS_URL=redis://<redis-service>.zeabur.internal:6379`。
-3. push 自動重新部署。
-> 在程式碼真的連 Redis 之前，加它沒有作用，所以不急。
+| Public surface | Service | Port |
+|---|---|---:|
+| Chat REST | `chat-service` | 8080 |
+| Auth/User REST | `user-service` | 8082 |
+| Notification API | `notification-service` | 8083 |
+| WebSocket | `realtime-service` or gateway | 8081 |
 
----
+Keep PostgreSQL, Redis, NATS client port `4222`, and NATS monitor port `8222`
+private unless the platform requires temporary operational access.
 
-## 疑難排解
+## NATS Setup
 
-| 症狀 | 原因 / 解法 |
-|---|---|
-| build 找不到 `src/` | 確認 Root Directory = `backend`、用的是 `backend/Dockerfile`（非 Dockerfile.dev） |
-| 啟動報 `tsx`/`prisma` not found | Dockerfile 用 `npm install --include=dev`（已內建）；確認沒被平台改成 production-only install |
-| migrate 失敗 | `DATABASE_URL` 沒設或連不到 Postgres；確認 Postgres 服務已啟動、字串正確 |
-| WS 連不上 | 8081 沒在 Networking 暴露；或 client 連到 REST(8080) 網域而非 WS(8081) 網域 |
-| 啟動卡住 / NATS 報錯 | `NATS_URL` 指向的服務沒起；先確認 NATS 服務 Running，再重啟 app（或先不設 NATS_URL 走直接寫 DB） |
+NATS must run with JetStream enabled. The local full stack uses:
+
+```yaml
+command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+```
+
+The split `compose.nats.yml` enables JetStream and monitoring with:
+
+```yaml
+command: ["-js", "-m", "8222"]
+```
+
+The application creates the `MESSAGE_WRITES` stream and `message-writer`
+durable consumer on startup, so no manual stream bootstrap is required.
+
+## Database Migration
+
+Run migrations once per deployment before serving traffic:
+
+```bash
+npx prisma migrate deploy
+npx prisma generate
+```
+
+In the current Docker setup, run this from `user-service` because it already has
+the backend source mounted and shares the same database URL:
+
+```bash
+docker compose exec user-service npx prisma migrate deploy
+docker compose exec user-service npx prisma generate
+```
+
+## Smoke Test
+
+1. Register or log in through `user-service` on port `8082`.
+2. Create/read chats through `chat-service` on port `8080`.
+3. Connect to `ws://<host>:8081/ws/chat?token=<jwt>`.
+4. Send a WebSocket `send` frame.
+5. Confirm the client receives an `ack`.
+6. Confirm the message appears in `GET /api/v1/chats/:id/messages`.
+7. Check writer logs for `message_writer_metrics` and confirm NATS backlog drains.
+
+## Operational Notes
+
+- The realtime service publishes WebSocket message-write commands to NATS.
+- The writer service consumes the JetStream queue, persists messages in
+  PostgreSQL, updates room ordering, and optionally drains the outbox to Redis.
+- Redis is still required for presence, rate limits, idempotency cache, and
+  cross-instance room event fanout.
+- The generated load-test data under `load/reports/` and
+  `backend/load-tests/generated/` is local output and should not be committed.

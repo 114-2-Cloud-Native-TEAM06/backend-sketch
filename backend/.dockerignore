@@ -1,7 +1,8 @@
 node_modules
 dist
+build
 coverage
-.git
-.env
-*.env*
+.cache
+.npm
 *.log
+load-tests/generated

@@ -2,169 +2,155 @@
 
 114-2 Cloud Native
 
-## API Usage
+## Local Stack
 
-### Authentication
+The backend is split into separate containers:
 
-```
-POST /api/v1/auth/register
-Body: { "username": "alice", "email": "alice@example.com", "password": "password123", "display_name": "Alice" }
+| Service | Port | Purpose |
+|---|---:|---|
+| `chat-service` | 8080 | Chat REST APIs |
+| `realtime-service` | 8081 | WebSocket `/ws/chat` |
+| `user-service` | 8082 | Auth and user REST APIs |
+| `notification-service` | 8083 | Notification health/API service |
+| `postgres` | 5432 | PostgreSQL |
+| `redis` | 6379 | Redis |
+| `nats` | 4222 / 8222 | NATS JetStream and monitor |
 
-POST /api/v1/auth/login
-Body: { "email": "alice@example.com", "password": "password123" }
-```
+Start the full stack:
 
-Both endpoints return `{ user, token }`. Include the token in subsequent requests:
-```
-Authorization: Bearer <token>
-```
-
-### Users
-
-```
-GET /api/v1/users/me           # current user profile
-GET /api/v1/users/:id          # look up a user before creating a chat
-```
-
-### Chats
-
-```
-POST /api/v1/chats             # create a 1-on-1 or group chat
-GET  /api/v1/chats             # list my chats (sorted by latest message)
-GET  /api/v1/chats/:id         # chat detail
-```
-
-### Messages
-
-```
-GET /api/v1/chats/:id/messages?before_message_id=<messageId>&limit=50   # paginated history
-```
-
-### WebSocket Events (socket.io)
-
-| Direction | Event | Payload |
-|-----------|-------|---------|
-| Client → Server | `send_message` | `{ roomId, content }` |
-| Client → Server | `join_room` | `{ roomId }` |
-| Server → Client | `new_message` | `{ roomId, senderId, content, timestamp }` |
-| Server → Client | `user_online` | `{ userId }` |
-| Server → Client | `user_offline` | `{ userId }` |
-| Server → Client | `notification` | `{ type, payload }` |
-
----
-
-## Requirements
-
-- Docker & Docker Compose
-
-No other local dependencies are required. Node.js, PostgreSQL, and Redis all run inside containers.
-
-**Start the full stack:**
 ```bash
 docker compose up --build -d
 ```
 
-**First-time database setup:**
+Apply database migrations after the database is healthy:
+
 ```bash
-docker compose exec app npx prisma migrate dev --name init
+docker compose exec user-service npx prisma migrate deploy
+docker compose exec user-service npx prisma generate
 ```
 
-**Verify it's running:**
+Verify the HTTP services:
+
 ```bash
 curl http://localhost:8080/health
-# → {"status":"ok"}
+curl http://localhost:8082/health
+curl http://localhost:8083/health
 ```
 
----
+## API Usage
 
-## Development
+Auth and user APIs are served by `user-service` on port `8082`.
 
-### Start Development Environment
+```http
+POST http://localhost:8082/api/v1/auth/register
+POST http://localhost:8082/api/v1/auth/login
+GET  http://localhost:8082/api/v1/users/me
+GET  http://localhost:8082/api/v1/users/:id
+```
+
+Chat APIs are served by `chat-service` on port `8080`.
+
+```http
+POST http://localhost:8080/api/v1/chats
+GET  http://localhost:8080/api/v1/chats
+GET  http://localhost:8080/api/v1/chats/:id
+GET  http://localhost:8080/api/v1/chats/:id/messages?before_message_id=<messageId>&limit=50
+```
+
+Both auth endpoints return `{ user, token }`. Include the token in subsequent REST requests:
+
+```http
+Authorization: Bearer <token>
+```
+
+WebSocket is served by `realtime-service` on port `8081`:
+
+```txt
+ws://localhost:8081/ws/chat?token=<token>
+```
+
+Client frames include:
+
+```json
+{ "type": "send", "request_id": "client-id-1", "chat_id": "<chat-id>", "body": "hello" }
+{ "type": "typing", "chat_id": "<chat-id>", "is_typing": true }
+{ "type": "ping" }
+```
+
+Server frames include `ack`, `message`, `typing`, `presence`, `pong`, and `error`.
+
+## Tests
+
+Run all backend tests inside Docker:
 
 ```bash
-docker compose up -d
+docker compose --profile test run --rm --build test
 ```
 
-### Run Backend Tests
-
-Run all backend tests with Vitest inside Docker. This starts an isolated
-PostgreSQL test database, applies Prisma migrations, runs unit and integration
-tests, and keeps test data separate from the development database:
+Run only unit tests:
 
 ```bash
-docker compose --profile test run --rm test
+docker compose --profile test run --rm test npm run test:unit
 ```
 
-The `test` service starts `postgres-test`, generates the Prisma client, applies
-migrations, and then runs the full test suite.
-
-To run only unit tests in Docker:
+Run only integration tests:
 
 ```bash
-docker compose run --rm test npm run test:unit
+docker compose --profile test run --rm test sh -c "npx prisma generate && npx prisma migrate deploy && npm run test:integration"
 ```
 
-To generate Vitest coverage reports:
+Run TypeScript locally from `backend/`:
 
 ```bash
-docker compose run --rm test npm run test:coverage
+npx tsc --noEmit
 ```
 
-Integration tests require a PostgreSQL test database. To run only integration
-tests in Docker:
+## Load Testing
+
+The k6 scripts live in `load/`. Defaults target the split service ports:
+
+- `USER_API_BASE=http://localhost:8082`
+- `CHAT_API_BASE=http://localhost:8080`
+- `WS_BASE=ws://localhost:8081`
+
+The dev compose file raises REST rate-limit defaults so k6 setup can create test users and rooms without measuring auth throttling.
+
+Quick smoke run with local k6:
 
 ```bash
-docker compose run --rm test sh -c "npx prisma generate && npx prisma migrate deploy && npm run test:integration"
+k6 run -e USERS=10 -e DURATION=30s load/ws-chat-load.js
 ```
 
-If Docker uses a stale backend image after Dockerfile or dependency changes, add
-`--build`:
+Docker k6 example:
 
 ```bash
-docker compose run --rm --build test
+docker run --rm -v "$PWD/load:/scripts" grafana/k6 run \
+  -e USER_API_BASE=http://host.docker.internal:8082 \
+  -e CHAT_API_BASE=http://host.docker.internal:8080 \
+  -e WS_BASE=ws://host.docker.internal:8081 \
+  -e USERS=10 \
+  -e DURATION=30s \
+  -e RUN_ID=smoke \
+  -e REPORT_DIR=/scripts/reports \
+  /scripts/ws-chat-load.js
 ```
 
-If you run scripts directly outside Docker, `npm run test:unit` does not need a
-database, but `npm run test:integration` requires `DATABASE_URL` to point to a
-test database whose name or host contains `test`:
+See `load/README.md` and `backend/load-tests/README.md` for staged load-test flows.
+
+## Prisma Studio
 
 ```bash
-npm run test:unit
-NODE_ENV=test DATABASE_URL=postgresql://admin:password@localhost:5432/imdb_test npm run test:integration
+docker compose exec user-service npx prisma studio --hostname 0.0.0.0
 ```
 
-### Visualize Database
-
-Open Prisma Studio to view and manage database records:
-
-```bash
-docker compose exec app npx prisma studio --hostname 0.0.0.0
-```
-
-Then visit `http://localhost:5555` in your browser.
-
----
+Then visit `http://localhost:5555`.
 
 ## Evaluation Criteria
 
 | Weight | Category | Description |
-|--------|----------|-------------|
-| 30% | Requirements Implementation | All core and advanced features functional; UI usability and RWD |
-| 10% | Code Quality | Readability, modularity, effective version control, no security vulnerabilities |
-| 25% | Architecture & Scalability | Capacity for tens of thousands of concurrent users (~1,000 msg/sec); k6 load test report required |
-| 25% | Testing & Verification | Unit tests, integration tests, correctness validation |
-| 10% | Operations & Reliability | Monitoring metrics, health indicators, and their significance explained |
-
-### Core Requirements
-
-- Login / registration system
-- 1-on-1 chat rooms (created by user ID)
-- Plain-text messages with full history (scroll to view)
-- Web UI: room list on the left, active room on the right
-- Add new room button with user ID input
-
-### Advanced Requirements
-
-- Push notifications on incoming messages
-- Group chat support
-- Real-time online status display
+|---:|---|---|
+| 30% | Requirements Implementation | Core and advanced features work correctly |
+| 10% | Code Quality | Readability, modularity, security |
+| 25% | Architecture and Scalability | Capacity target and k6 load-test report |
+| 25% | Testing and Verification | Unit tests, integration tests, correctness validation |
+| 10% | Operations and Reliability | Metrics, health indicators, and explanations |

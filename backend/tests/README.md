@@ -2,7 +2,7 @@
 
 The backend Vitest suite is intentionally separated by level:
 
-- `src/**/__tests__/*.unit.test.ts`: fast tests with mocked Prisma clients. These validate route and middleware behavior without a database.
+- `services/**/__tests__/*.unit.test.ts` and `packages/**/__tests__/*.unit.test.ts`: fast tests with mocked Prisma clients. These validate route and middleware behavior without a database.
 - `tests/integration/`: workflow tests that use a real PostgreSQL test database through Prisma.
 - `tests/helpers/`: shared test utilities for HTTP requests and database reset/disconnect logic.
 
@@ -14,7 +14,7 @@ Run the full backend suite from Docker:
 docker compose --profile test run --rm test
 ```
 
-The Docker test service generates the Prisma client, applies migrations, and uses an isolated PostgreSQL database (`postgres-test` / `imdb_test`) with `NODE_ENV=test`. Integration tests call `resetDatabase()` before each test and again after the suite finishes. The reset helper refuses to run unless `NODE_ENV=test` and `DATABASE_URL` points to a test database, which prevents accidental cleanup of a development database.
+The Docker test service generates the Prisma client, applies migrations, and uses isolated PostgreSQL and Redis services (`postgres-test` / `imdb_test`, `redis-test`) with `NODE_ENV=test`. Integration tests call `resetDatabase()` before each test and again after the suite finishes. The reset helper refuses to run unless `NODE_ENV=test` and `DATABASE_URL` points to a test database, which prevents accidental cleanup of a development database.
 
 Run only unit tests in Docker:
 
@@ -71,7 +71,7 @@ All unit tests are written in AAA style (`Arrange`, `Act`, `Assert`) and cover:
 
 ### Auth Routes
 
-File: `src/routes/__tests__/auth.unit.test.ts`
+File: `services/user-service/src/modules/auth/__tests__/auth.routes.unit.test.ts`
 
 Covered APIs:
 
@@ -98,7 +98,7 @@ Covered behavior and boundary conditions:
 
 ### Chat Routes
 
-File: `src/routes/__tests__/chats.unit.test.ts`
+File: `services/chat-service/src/modules/chats/__tests__/chats.routes.unit.test.ts`
 
 Covered APIs:
 
@@ -126,7 +126,7 @@ Covered behavior and boundary conditions:
 
 ### User Routes
 
-File: `src/routes/__tests__/users.unit.test.ts`
+File: `services/user-service/src/modules/users/__tests__/users.routes.unit.test.ts`
 
 Covered APIs:
 
@@ -145,7 +145,7 @@ Covered behavior and boundary conditions:
 
 ### Auth Middleware
 
-File: `src/middleware/__tests__/auth.unit.test.ts`
+File: `packages/shared-auth/src/__tests__/auth-middleware.unit.test.ts`
 
 Covered behavior and boundary conditions:
 
@@ -234,13 +234,13 @@ Covered workflows:
 - Respond asynchronously to `ping` frames with `pong`.
 - Ignore malformed frames until timeout while keeping the connection open.
 
-### REST App Workflows
+### Service Health Workflows
 
-File: `tests/integration/rest-app.integration.test.ts`
+File: `tests/integration/service-health.integration.test.ts`
 
 Covered workflows:
 
-- Verify `/health` is available through the assembled REST app without database access.
+- Verify `/health` is available through the chat, user, and notification service apps without database access.
 
 ## Current Intentional Gaps
 

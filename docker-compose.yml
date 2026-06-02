@@ -1,32 +1,153 @@
+name: backend-sketch
+
+x-backend-service: &backend-service
+  image: backend-sketch-backend-dev
+  build:
+    context: ./backend
+    dockerfile: Dockerfile.dev
+  volumes:
+    - ./backend:/app
+    - /app/node_modules
+  environment:
+    NODE_ENV: development
+    DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+    REDIS_URL: redis://redis:6379
+    NATS_URL: nats://nats:4222
+    JWT_SECRET: dev_secret_change_in_prod
+    API_VERSION: "1"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+x-realtime-service: &realtime-service
+  <<: *backend-service
+  command: npx tsx watch services/realtime-service/src/main.ts
+  environment:
+    NODE_ENV: development
+    DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+    REDIS_URL: redis://redis:6379
+    NATS_URL: nats://nats:4222
+    JWT_SECRET: dev_secret_change_in_prod
+    WS_PORT: "8081"
+    WS_RATE_LIMIT_MODE: "off"
+    REALTIME_DISABLE_NATS_PUBLISH: "${REALTIME_DISABLE_NATS_PUBLISH:-false}"
+    LOAD_METRICS_LOG_INTERVAL_MS: "${LOAD_METRICS_LOG_INTERVAL_MS:-5000}"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    nats:
+      condition: service_healthy
+
 services:
-  app:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
+  chat-service:
+    <<: *backend-service
+    command: npx tsx watch services/chat-service/src/main.ts
     ports:
-      - "8080:8080"   # REST
-      - "8081:8081"   # WebSocket
-      - "5555:5555"   # Prisma Studio
-    volumes:
-      - ./backend:/app        # 本機 code → container，改檔案即時生效
-      - /app/node_modules     # node_modules 不被本機蓋掉
+      - "${CHAT_SERVICE_HOST_PORT:-8080}:8080"
     environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://admin:password@postgres:5432/imdb
-      - REDIS_URL=redis://redis:6379
-      - NATS_URL=nats://nats:4222
-      - JWT_SECRET=dev_secret_change_in_prod
-      - API_VERSION=1
+      NODE_ENV: development
+      DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev_secret_change_in_prod
+      API_VERSION: "1"
+      CHAT_SERVICE_PORT: "8080"
+      REST_RATE_LIMIT_PER_MINUTE: "${REST_RATE_LIMIT_PER_MINUTE:-10000}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  user-service:
+    <<: *backend-service
+    command: npx tsx watch services/user-service/src/main.ts
+    ports:
+      - "${USER_SERVICE_HOST_PORT:-8082}:8082"
+      - "${PRISMA_STUDIO_HOST_PORT:-5555}:5555"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: dev_secret_change_in_prod
+      API_VERSION: "1"
+      USER_SERVICE_PORT: "8082"
+      REST_AUTH_RATE_LIMIT_PER_MINUTE: "${REST_AUTH_RATE_LIMIT_PER_MINUTE:-10000}"
+      REST_RATE_LIMIT_PER_MINUTE: "${REST_RATE_LIMIT_PER_MINUTE:-10000}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8082/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  notification-service:
+    <<: *backend-service
+    command: npx tsx watch services/notification-service/src/main.ts
+    ports:
+      - "${NOTIFICATION_SERVICE_HOST_PORT:-8083}:8083"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev_secret_change_in_prod
+      API_VERSION: "1"
+      NOTIFICATION_SERVICE_PORT: "8083"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8083/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  realtime-service-1:
+    <<: *realtime-service
+
+  realtime-service-2:
+    <<: *realtime-service
+
+  realtime-gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "${WS_HOST_PORT:-8081}:8081"
+    volumes:
+      - ./ops/nginx/realtime-2.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - realtime-service-1
+      - realtime-service-2
+    restart: unless-stopped
+
+  message-writer-service:
+    <<: *backend-service
+    command: npx tsx watch services/message-writer-service/src/main.ts
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: dev_secret_change_in_prod
+      MESSAGE_WRITER_BATCH_SIZE: "${MESSAGE_WRITER_BATCH_SIZE:-250}"
+      MESSAGE_WRITER_BATCH_FLUSH_MS: "${MESSAGE_WRITER_BATCH_FLUSH_MS:-50}"
+      MESSAGE_WRITER_BATCH_CONCURRENCY: "${MESSAGE_WRITER_BATCH_CONCURRENCY:-4}"
+      MESSAGE_WRITER_MAX_MESSAGES: "${MESSAGE_WRITER_MAX_MESSAGES:-512}"
+      MESSAGE_WRITE_MAX_ACK_PENDING: "${MESSAGE_WRITE_MAX_ACK_PENDING:-4096}"
+      MESSAGE_WRITER_DISABLE_FANOUT: "${MESSAGE_WRITER_DISABLE_FANOUT:-true}"
+      LOAD_METRICS_LOG_INTERVAL_MS: "${LOAD_METRICS_LOG_INTERVAL_MS:-5000}"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       nats:
-        condition: service_started
-    restart: unless-stopped
+        condition: service_healthy
+    cpus: "${MESSAGE_WRITER_CPUS:-1.0}"
+    mem_limit: "${MESSAGE_WRITER_MEM_LIMIT:-768m}"
 
   test:
+    image: backend-sketch-backend-dev
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
@@ -35,11 +156,12 @@ services:
       - ./backend:/app
       - /app/node_modules
     environment:
-      - NODE_ENV=test
-      - DATABASE_URL=postgresql://admin:password@postgres-test:5432/imdb_test
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=dev_secret_change_in_prod
-      - API_VERSION=1
+      NODE_ENV: test
+      DATABASE_URL: postgresql://admin:password@postgres-test:5432/imdb_test
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: dev_secret_change_in_prod
+      API_VERSION: "1"
     depends_on:
       postgres-test:
         condition: service_healthy
@@ -58,14 +180,14 @@ services:
       test: ["CMD-SHELL", "pg_isready -U admin -d imdb_test"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     profiles:
       - test
 
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"           # 本機可用 DBeaver / psql 直連
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
@@ -76,28 +198,36 @@ services:
       test: ["CMD-SHELL", "pg_isready -U admin -d imdb"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"           # 本機可用 RedisInsight 直連
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
 
   nats:
     image: nats:2.10-alpine
     command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${NATS_HOST_PORT:-4222}:4222"
+      - "${NATS_MONITOR_HOST_PORT:-8222}:8222"
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
 volumes:
   postgres_data:

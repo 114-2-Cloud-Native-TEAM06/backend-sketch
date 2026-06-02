@@ -21,6 +21,7 @@ coverage/
 backend/coverage/
 load/reports/*
 !load/reports/.gitkeep
+backend/load-tests/generated/
 .next/
 .nuxt/
 out/
@@ -44,3 +45,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 *.env*
 CLAUDE.md
 AGENT.md
+
+# Local agent planning notes
+task_plan.md
+findings.md
+progress.md

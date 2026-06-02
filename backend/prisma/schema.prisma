@@ -16,48 +16,107 @@ model User {
   password    String
   createdAt   DateTime @default(now())
 
-  // 關聯
-  memberships RoomMember[]
-  messages    Message[]
+  memberships   RoomMember[]
+  messages      Message[]
+  messageWrites MessageWrite[]
 }
 
 model Room {
-  id            String    @id @default(uuid())
-  name          String?                        // 群組才有名稱，1對1 為 null
-  isGroup       Boolean   @default(false)
-  createdAt     DateTime  @default(now())
-  lastMessageAt DateTime  @default(now())      // 每次送訊息時更新，供聊天室列表排序
+  id             String   @id @default(uuid())
+  name           String?
+  isGroup        Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  lastMessageAt  DateTime @default(now())
+  nextMessageSeq BigInt   @default(1)
 
-  // 關聯
-  members  RoomMember[]
-  messages Message[]
+  members       RoomMember[]
+  messages      Message[]
+  messageWrites MessageWrite[]
 
   @@index([lastMessageAt])
 }
 
 model RoomMember {
-  userId    String
-  roomId    String
-  joinedAt  DateTime @default(now())
+  userId   String
+  roomId   String
+  joinedAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id])
   room Room @relation(fields: [roomId], references: [id])
 
-  @@id([userId, roomId])                  // 複合 PK，防止重複加入
+  @@id([userId, roomId])
 }
 
 model Message {
-  id        String   @id @default(uuid())
-  content   String
-  createdAt DateTime @default(now())
-  requestId String?
+  id           String   @id @default(uuid())
+  content      String
+  createdAt    DateTime @default(now())
+  requestId    String?
+  roomSequence BigInt
 
-  senderId  String
-  roomId    String
+  senderId String
+  roomId   String
+
+  sender  User            @relation(fields: [senderId], references: [id])
+  room    Room            @relation(fields: [roomId], references: [id])
+  outbox  MessageOutbox[]
+
+  @@index([roomId, createdAt])
+  @@index([roomId, roomSequence])
+  @@unique([roomId, roomSequence])
+  @@unique([senderId, requestId])
+}
+
+enum MessageWriteStatus {
+  PENDING
+  PERSISTED
+  FANOUTED
+  DEAD
+}
+
+enum MessageOutboxStatus {
+  PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+model MessageWrite {
+  id            String             @id @default(uuid())
+  requestId     String
+  senderId      String
+  roomId        String
+  content       String
+  status        MessageWriteStatus @default(PENDING)
+  acceptedAt    DateTime           @default(now())
+  persistedAt   DateTime?
+  failedAt      DateTime?
+  failureReason String?
 
   sender User @relation(fields: [senderId], references: [id])
   room   Room @relation(fields: [roomId], references: [id])
 
-  @@index([roomId, createdAt])            // 查歷史訊息的查詢會用到
   @@unique([senderId, requestId])
+  @@index([roomId, acceptedAt])
+}
+
+model MessageOutbox {
+  id                 String              @id @default(uuid())
+  eventType          String
+  messageId          String
+  status             MessageOutboxStatus @default(PENDING)
+  attempts           Int                 @default(0)
+  nextAttemptAt      DateTime?
+  lockedAt           DateTime?
+  publishedAt        DateTime?
+  failureReason      String?
+  originConnectionId String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@unique([eventType, messageId])
+  @@index([status, nextAttemptAt])
+  @@index([messageId])
 }

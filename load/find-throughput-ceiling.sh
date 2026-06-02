@@ -6,7 +6,8 @@ USERS="${USERS:-100}"
 DURATION="${DURATION:-2m}"
 SOCKET_LIFE_MS="${SOCKET_LIFE_MS:-60000}"
 MAX_PENDING_ACKS="${MAX_PENDING_ACKS:-1000}"
-API_BASE="${API_BASE:-http://host.docker.internal:8080}"
+USER_API_BASE="${USER_API_BASE:-${API_BASE:-http://host.docker.internal:8082}}"
+CHAT_API_BASE="${CHAT_API_BASE:-${API_BASE:-http://host.docker.internal:8080}}"
 WS_BASE="${WS_BASE:-ws://host.docker.internal:8081}"
 REPORT_DIR="${REPORT_DIR:-load/reports}"
 RUN_PREFIX="${RUN_PREFIX:-tc$(date +%H%M%S)}"
@@ -47,7 +48,8 @@ for interval in $INTERVALS; do
   docker run --rm \
     -v "$PWD/load:/scripts" \
     grafana/k6 run \
-    -e API_BASE="$API_BASE" \
+    -e USER_API_BASE="$USER_API_BASE" \
+    -e CHAT_API_BASE="$CHAT_API_BASE" \
     -e WS_BASE="$WS_BASE" \
     -e USERS="$USERS" \
     -e DURATION="$DURATION" \

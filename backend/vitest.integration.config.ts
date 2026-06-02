@@ -4,8 +4,8 @@ export default defineConfig({
   test: {
     coverage: {
       all: true,
-      exclude: ['src/types/**'],
-      include: ['src/**/*.ts'],
+      exclude: ['packages/shared-types/**'],
+      include: ['src/**/*.ts', 'services/**/*.ts', 'packages/**/*.ts'],
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],
       reportsDirectory: 'coverage/integration',

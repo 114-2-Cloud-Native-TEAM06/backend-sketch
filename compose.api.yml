@@ -1,0 +1,65 @@
+name: backend-sketch-api
+
+x-backend-service: &backend-service
+  image: backend-sketch-backend-dev
+  build:
+    context: ./backend
+    dockerfile: Dockerfile.dev
+  volumes:
+    - ./backend:/app
+    - /app/node_modules
+  environment:
+    NODE_ENV: development
+    DATABASE_URL: ${DATABASE_URL:-postgresql://admin:password@postgres:5432/imdb}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_prod}
+    API_VERSION: ${API_VERSION:-1}
+  restart: unless-stopped
+  networks:
+    - backend-sketch-net
+
+services:
+  chat-service:
+    <<: *backend-service
+    command: npx tsx watch services/chat-service/src/main.ts
+    ports:
+      - "${CHAT_SERVICE_HOST_PORT:-8080}:8080"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://admin:password@postgres:5432/imdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_prod}
+      API_VERSION: ${API_VERSION:-1}
+      CHAT_SERVICE_PORT: ${CHAT_SERVICE_PORT:-8080}
+
+  user-service:
+    <<: *backend-service
+    command: npx tsx watch services/user-service/src/main.ts
+    ports:
+      - "${USER_SERVICE_HOST_PORT:-8082}:8082"
+      - "${PRISMA_STUDIO_HOST_PORT:-5555}:5555"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://admin:password@postgres:5432/imdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_prod}
+      API_VERSION: ${API_VERSION:-1}
+      USER_SERVICE_PORT: ${USER_SERVICE_PORT:-8082}
+
+  notification-service:
+    <<: *backend-service
+    command: npx tsx watch services/notification-service/src/main.ts
+    ports:
+      - "${NOTIFICATION_SERVICE_HOST_PORT:-8083}:8083"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://admin:password@postgres:5432/imdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_prod}
+      API_VERSION: ${API_VERSION:-1}
+      NOTIFICATION_SERVICE_PORT: ${NOTIFICATION_SERVICE_PORT:-8083}
+
+networks:
+  backend-sketch-net:
+    name: backend-sketch-net
+    external: true
