@@ -5,6 +5,11 @@ x-backend-service: &backend-service
   build:
     context: ./backend
     dockerfile: Dockerfile.dev
+  # Grafana Cloud OTLP/Pyroscope creds + observability toggles (shared by all
+  # services). Optional: without the file, telemetry just targets localhost.
+  env_file:
+    - path: .env.observability
+      required: false
   volumes:
     - ./backend:/app
     - /app/node_modules
@@ -24,9 +29,10 @@ x-backend-service: &backend-service
 
 x-realtime-service: &realtime-service
   <<: *backend-service
-  command: npx tsx watch services/realtime-service/src/main.ts
+  command: npx tsx watch --import ./packages/shared-observability/src/instrumentation.ts services/realtime-service/src/main.ts
   environment:
     NODE_ENV: development
+    OTEL_SERVICE_NAME: realtime-service
     DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
     REDIS_URL: redis://redis:6379
     NATS_URL: nats://nats:4222
@@ -48,11 +54,12 @@ x-realtime-service: &realtime-service
 services:
   chat-service:
     <<: *backend-service
-    command: npx tsx watch services/chat-service/src/main.ts
+    command: npx tsx watch --import ./packages/shared-observability/src/instrumentation.ts services/chat-service/src/main.ts
     ports:
       - "${CHAT_SERVICE_HOST_PORT:-8080}:8080"
     environment:
       NODE_ENV: development
+      OTEL_SERVICE_NAME: chat-service
       DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
       REDIS_URL: redis://redis:6379
       JWT_SECRET: dev_secret_change_in_prod
@@ -67,12 +74,13 @@ services:
 
   user-service:
     <<: *backend-service
-    command: npx tsx watch services/user-service/src/main.ts
+    command: npx tsx watch --import ./packages/shared-observability/src/instrumentation.ts services/user-service/src/main.ts
     ports:
       - "${USER_SERVICE_HOST_PORT:-8082}:8082"
       - "${PRISMA_STUDIO_HOST_PORT:-5555}:5555"
     environment:
       NODE_ENV: development
+      OTEL_SERVICE_NAME: user-service
       DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
       REDIS_URL: redis://redis:6379
       NATS_URL: nats://nats:4222
@@ -89,11 +97,12 @@ services:
 
   notification-service:
     <<: *backend-service
-    command: npx tsx watch services/notification-service/src/main.ts
+    command: npx tsx watch --import ./packages/shared-observability/src/instrumentation.ts services/notification-service/src/main.ts
     ports:
       - "${NOTIFICATION_SERVICE_HOST_PORT:-8083}:8083"
     environment:
       NODE_ENV: development
+      OTEL_SERVICE_NAME: notification-service
       DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
       REDIS_URL: redis://redis:6379
       JWT_SECRET: dev_secret_change_in_prod
@@ -124,9 +133,10 @@ services:
 
   message-writer-service:
     <<: *backend-service
-    command: npx tsx watch services/message-writer-service/src/main.ts
+    command: npx tsx watch --import ./packages/shared-observability/src/instrumentation.ts services/message-writer-service/src/main.ts
     environment:
       NODE_ENV: development
+      OTEL_SERVICE_NAME: message-writer-service
       DATABASE_URL: postgresql://admin:password@postgres:5432/imdb
       REDIS_URL: redis://redis:6379
       NATS_URL: nats://nats:4222

@@ -50,3 +50,6 @@ AGENT.md
 task_plan.md
 findings.md
 progress.md
+
+# Observability secrets (Grafana Cloud creds) — never commit
+.env.observability

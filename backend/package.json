@@ -26,12 +26,22 @@
     "db:setup": "docker compose -f ../compose.api.yml exec user-service npx prisma migrate deploy && docker compose -f ../compose.api.yml exec user-service npx prisma generate && docker compose -f ../compose.api.yml restart user-service chat-service notification-service"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.218.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/resources": "^2.7.1",
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
     "@prisma/client": "^5.0.0",
+    "@pyroscope/nodejs": "^0.4.11",
     "bcryptjs": "^2.4.3",
     "express": "^4.18.2",
     "express-async-errors": "^3.1.1",
     "jsonwebtoken": "^9.0.0",
     "nats": "^2.29.3",
+    "pino": "^10.3.1",
+    "pino-opentelemetry-transport": "^3.0.0",
     "redis": "^4.6.0",
     "ws": "^8.18.0"
   },
