@@ -1,0 +1,47 @@
+# Public HTTPS entrypoint for the IM system (Plan A — single VM).
+#
+# Caddy terminates TLS (auto Let's Encrypt for $DOMAIN) and:
+#   - serves the React SPA (static build) at /
+#   - path-routes /api/v1/* and /ws/chat* to the backend microservices
+# Frontend and API share ONE origin, so the browser needs no CORS.
+#
+# Set DOMAIN in the environment and point its DNS A record at this host.
+# Mount the built SPA at /srv/frontend (see compose.caddy.yml + FRONTEND_DIST).
+
+{$DOMAIN} {
+	# WebSocket → realtime-gateway (load-balances realtime-service-1/-2).
+	handle /ws/chat* {
+		reverse_proxy realtime-gateway:8081
+	}
+
+	# Chat REST
+	handle /api/v1/chats* {
+		reverse_proxy chat-service:8080
+	}
+
+	# Auth + Users REST
+	handle /api/v1/auth* {
+		reverse_proxy user-service:8082
+	}
+	handle /api/v1/users* {
+		reverse_proxy user-service:8082
+	}
+
+	# Notifications
+	handle /api/v1/notifications* {
+		reverse_proxy notification-service:8083
+	}
+
+	# Backend health probe (kept off the SPA so uptime checks hit the API)
+	handle /health {
+		reverse_proxy chat-service:8080
+	}
+
+	# Everything else → the React SPA. try_files falls back to index.html so
+	# client-side routes (e.g. /chat/123) load the app instead of 404.
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}
