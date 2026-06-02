@@ -188,3 +188,73 @@ docker compose exec user-service npx prisma generate
   cross-instance room event fanout.
 - The generated load-test data under `load/reports/` and
   `backend/load-tests/generated/` is local output and should not be committed.
+
+## Single-VM Deploy (Droplet) with HTTPS via Caddy
+
+The simplest always-on deploy that satisfies the HTTPS requirement: one VM runs
+the full stack via docker compose, fronted by **Caddy** for automatic
+Let's Encrypt TLS. REST and WSS then share one HTTPS domain. Added files:
+`compose.caddy.yml` + `ops/caddy/Caddyfile`.
+
+### Prerequisites
+- A VM (e.g. DigitalOcean Droplet, Ubuntu 22.04, **≥ 4 GB RAM** — the stack is 5
+  services + Postgres/Redis/NATS). The GitHub Student Pack DigitalOcean $200
+  credit covers it for months.
+- A **domain** pointed at the VM's public IP (Let's Encrypt needs a real domain,
+  not a bare IP). The Student Pack includes a free `.me` from Namecheap. Create
+  an A record, e.g. `im.example.com → <droplet-ip>`.
+
+### Steps
+1. Create the Droplet and SSH in.
+2. Install Docker + the compose plugin:
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   ```
+3. Clone the repo (private repo → use a read-only deploy key or a PAT):
+   ```bash
+   git clone https://github.com/114-2-Cloud-Native-TEAM06/backend-sketch.git
+   cd backend-sketch
+   ```
+4. **Change `JWT_SECRET`** from the dev default (`dev_secret_change_in_prod`) to a
+   strong value for production (edit the compose env or supply an override).
+5. Point the domain + bring up the stack with Caddy:
+   ```bash
+   export DOMAIN=im.example.com
+   docker compose -f docker-compose.yml -f compose.caddy.yml up --build -d
+   ```
+6. Apply migrations:
+   ```bash
+   docker compose exec user-service npx prisma migrate deploy
+   docker compose exec user-service npx prisma generate
+   ```
+7. Firewall — expose only 80/443 (+ 22 for SSH); keep service/DB ports private:
+   ```bash
+   ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
+   ```
+8. Verify:
+   ```bash
+   curl https://im.example.com/health         # via Caddy → chat-service
+   # WS: wss://im.example.com/ws/chat?token=<jwt>
+   ```
+
+### Public URLs (give these to the frontend)
+```text
+REST: https://im.example.com/api/v1/...
+WS  : wss://im.example.com/ws/chat?token=...
+```
+
+Caddy routing (`ops/caddy/Caddyfile`):
+
+| Path | → Service |
+|---|---|
+| `/api/v1/chats*` | `chat-service:8080` |
+| `/api/v1/auth*`, `/api/v1/users*` | `user-service:8082` |
+| `/api/v1/notifications*` | `notification-service:8083` |
+| `/ws/chat*` | `realtime-gateway:8081` (→ realtime-service-1/-2) |
+
+### Notes
+- The TLS cert is issued/renewed automatically by Caddy and persisted in the
+  `caddy-data` volume.
+- This runs the dev compose (Dockerfile.dev / `tsx watch`), which is fine for a
+  course/demo and is always-on. For a hardened production setup, add a non-watch
+  build step and move secrets to env/secret storage.

@@ -1,0 +1,39 @@
+# Public HTTPS entrypoint for the IM microservices (Plan A — single VM).
+#
+# Caddy terminates TLS and automatically obtains + renews a Let's Encrypt
+# certificate for $DOMAIN, then path-routes to each backend service over the
+# internal compose network. REST and WSS therefore share ONE https domain.
+#
+# Set DOMAIN in the environment (compose passes it in) and point that domain's
+# DNS A record at this host's public IP before starting Caddy.
+
+{$DOMAIN} {
+	# WebSocket → realtime-gateway (nginx) which load-balances realtime-service-1/-2.
+	# Caddy detects the Upgrade header and proxies the WS connection transparently.
+	handle /ws/chat* {
+		reverse_proxy realtime-gateway:8081
+	}
+
+	# Chat REST
+	handle /api/v1/chats* {
+		reverse_proxy chat-service:8080
+	}
+
+	# Auth + Users REST
+	handle /api/v1/auth* {
+		reverse_proxy user-service:8082
+	}
+	handle /api/v1/users* {
+		reverse_proxy user-service:8082
+	}
+
+	# Notifications
+	handle /api/v1/notifications* {
+		reverse_proxy notification-service:8083
+	}
+
+	# Everything else (e.g. /health, root) → chat-service
+	handle {
+		reverse_proxy chat-service:8080
+	}
+}

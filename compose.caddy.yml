@@ -1,0 +1,37 @@
+# HTTPS gateway overlay (Plan A — single VM deploy).
+#
+# Adds a Caddy reverse proxy in front of the services for automatic HTTPS.
+# Run together with the main stack:
+#
+#   DOMAIN=im.example.com \
+#   docker compose -f docker-compose.yml -f compose.caddy.yml up --build -d
+#
+# Caddy joins the same compose network and reaches services by name
+# (chat-service, user-service, realtime-gateway, notification-service).
+# Point DOMAIN's DNS A record at this host before starting so Caddy can issue
+# a Let's Encrypt certificate. After this is up, the internal service ports
+# (8080/8081/8082/8083) do not need to be public — close them with a firewall
+# and expose only 80/443 (+ SSH).
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your domain, e.g. im.example.com}
+    volumes:
+      - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # persists issued certificates across restarts
+      - caddy-config:/config
+    depends_on:
+      - chat-service
+      - user-service
+      - realtime-gateway
+      - notification-service
+
+volumes:
+  caddy-data:
+  caddy-config:
