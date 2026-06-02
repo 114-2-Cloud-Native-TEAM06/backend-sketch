@@ -98,6 +98,14 @@ This benchmark produces:
 load/reports/evaluation-criteria-benchmark-<RUN_PREFIX>.md
 ```
 
+The summary markdown maps the result back to all five evaluation criteria:
+
+1. Requirements implementation.
+2. Code quality.
+3. Architecture and scalability.
+4. System testing and verification.
+5. Operations and reliability.
+
 It runs two evaluation-aligned tests:
 
 1. Online ceiling test for concurrent WebSocket users.
@@ -108,7 +116,7 @@ The summary markdown is written after the online stage and refreshed after the t
 Recommended command for the architecture/scalability evaluation:
 
 ```bash
-WS_PRELOAD_ROOMS=false docker compose up -d --force-recreate app
+WS_PRELOAD_ROOMS=false docker compose up -d --force-recreate realtime-service-1 realtime-service-2 realtime-gateway
 
 API_HEALTH_TIMEOUT_SECONDS=120 \
 USER_API_BASE=http://host.docker.internal:8082 \

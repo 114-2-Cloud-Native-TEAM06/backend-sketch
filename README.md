@@ -247,6 +247,8 @@ load/reports/online-ceiling-<RUN_PREFIX>-online.csv
 load/reports/throughput-ceiling-<RUN_PREFIX>-throughput.csv
 ```
 
+The Markdown summary maps the result back to all five evaluation criteria: requirements implementation, code quality, architecture/scalability, system testing, and operations/reliability.
+
 ### Troubleshooting
 
 If a report says `WebSocket connection attempts: 0`, k6 failed during `setup()` before opening WebSocket connections. Check the REST services first:

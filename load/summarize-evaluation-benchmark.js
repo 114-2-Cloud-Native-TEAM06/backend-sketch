@@ -121,15 +121,64 @@ if (throughput) {
 
 const summaryPath = path.join(reportDir, `evaluation-criteria-benchmark-${runPrefix}.md`);
 const completeness = throughput ? 'complete or post-throughput' : 'partial online-only';
+const scalabilityStatus = throughput && onlineRows.length > 0
+  ? 'Measured in this report'
+  : throughput || onlineRows.length > 0
+    ? 'Partially measured in this report'
+    : 'Not measured yet';
+const throughputReportFiles = throughput
+  ? `- \`ws-chat-load-${throughputRunId}.txt\`
+- \`ws-chat-load-${throughputRunId}.json\`
+- \`ws-chat-load-${throughputRunId}.k6-summary.json\``
+  : '- Throughput report not produced yet.';
+const onlineSourceFiles = onlineRows.length > 0
+  ? onlineRows.map((row) => `- \`${row.source}\``).join('\n')
+  : '- Online report not produced yet.';
+
 const markdown = `# Evaluation Criteria Benchmark - ${runPrefix}
 
 Status: ${completeness}
 
-## Target
+## Evaluation Criteria Mapping
 
-This benchmark maps to the evaluation item: architecture scalability under tens of thousands of concurrent online users, plus roughly 1,000 users sending one message per second.
+| Weight | Category | Benchmark Evidence | Status |
+|---:|---|---|---|
+| 30% | 需求轉換與實作 | REST/WebSocket feature checklist, health checks, manual UI/RWD demo evidence | Supporting evidence required |
+| 10% | 程式碼品質 | Modular multi-service codebase, tests, version-controlled scripts, security-sensitive auth validation | Supporting evidence required |
+| 25% | 架構設計與可擴展性 | Concurrent online ceiling and 1,000 users x 1 msg/sec k6 benchmark | ${scalabilityStatus} |
+| 25% | 系統測試與驗證 | Unit tests, integration tests, k6 load reports, DB persistence validation | Supporting evidence required |
+| 10% | 運維與可靠性 | Docker health checks, REST /health endpoints, runtime load metrics, threshold explanations | Supporting evidence required |
 
-## Pass Criteria
+## 30% 需求轉換與實作
+
+This benchmark report does not replace the product demo or UI/RWD review. Use it as supporting evidence that the implemented backend can run the required messaging flows under load.
+
+Evidence to present:
+
+- Auth/user APIs: register, login, profile, user lookup.
+- Chat APIs: create direct chat, create group chat, list chats, read message history.
+- WebSocket frames: send, ack, message, typing, presence, ping/pong, error.
+- Advanced requirements: message notification through real-time frames, group chat support, online presence.
+- UI/RWD evidence should come from frontend screenshots or demo steps, because k6 only validates backend behavior.
+
+## 10% 程式碼品質
+
+Evidence to present:
+
+- Version control contains benchmark scripts and optimization notes.
+- Services are split by responsibility: user, chat, realtime, notification, message writer.
+- Input validation and auth checks are covered by unit/integration tests.
+- Load-test scripts use explicit thresholds and JSON/Markdown outputs instead of manual screenshots only.
+- Security-sensitive evidence should include JWT auth validation and no known hardcoded production secret usage.
+
+## 25% 架構設計與可擴展性
+
+Target:
+
+- Handle large concurrent-online WebSocket usage.
+- Support roughly 1,000 users, each sending one message per second.
+
+Pass criteria:
 
 | Area | Metric | Threshold |
 |---|---:|---:|
@@ -141,7 +190,7 @@ This benchmark maps to the evaluation item: architecture scalability under tens 
 | 1,000 users x 1 msg/sec | ack p95 | <= ${ackP95Max}s |
 | 1,000 users x 1 msg/sec | DB persisted ratio | >= ${dbRatioMin}% |
 
-## Online Ceiling Result
+### Online Ceiling Result
 
 | Target users | Connect success | Unexpected close | Pong success | Pong p95 | Stable | Source |
 |---:|---:|---:|---:|---:|---|---|
@@ -149,15 +198,66 @@ ${onlineTable || '| none | none | none | none | none | no | none |'}
 
 Highest stable online users: ${highestOnline ? highestOnline.target_users : 'none'}
 
-## Throughput Result
+### Throughput Result
 
 ${throughputMarkdown}
 
-## Conclusion
+Architecture/scalability conclusion:
 
 - Online scalability: ${highestOnline ? `stable up to ${highestOnline.target_users} concurrent users in this run` : 'no stable online step in this run'}.
 - 1,000 users x 1 msg/sec: ${throughputConclusion}.
 - If a row has 0 connection attempts, k6 failed during setup before opening WebSocket connections; do not interpret it as a WebSocket capacity result.
+
+## 25% 系統測試與驗證
+
+Recommended verification commands:
+
+\`\`\`bash
+docker compose --profile test run --rm test npm run test:unit
+docker compose --profile test run --rm test sh -c "npx prisma generate && npx prisma migrate deploy && npm run test:integration"
+docker compose config --quiet
+\`\`\`
+
+Benchmark artifacts:
+
+Online reports:
+
+${onlineSourceFiles}
+
+Throughput reports:
+
+${throughputReportFiles}
+
+DB persistence check:
+
+\`\`\`bash
+docker compose exec postgres psql -U admin -d imdb -c \\
+  "SELECT count(*) FROM \\"Message\\" WHERE \\"requestId\\" LIKE 'k6-${throughputRunId}-%';"
+\`\`\`
+
+## 10% 運維與可靠性
+
+Health indicators:
+
+- \`chat-service\`: \`GET /health\` on port 8080.
+- \`user-service\`: \`GET /health\` on port 8082.
+- \`notification-service\`: \`GET /health\` on port 8083.
+- Docker Compose health checks for PostgreSQL, Redis, NATS, chat-service, user-service, notification-service.
+
+Runtime/load indicators:
+
+- WebSocket connect success rate.
+- Unexpected WebSocket closes.
+- Ping/pong success rate and p95 latency.
+- Ack p95 and ack error rate.
+- DB persisted ratio.
+- Realtime and message-writer load metrics in service logs.
+
+Operational interpretation:
+
+- Online passes but throughput fails: WebSocket connection layer is healthy; inspect message persistence, NATS, and PostgreSQL.
+- High ack p95: inspect message-writer backlog, Prisma connection pool, DB CPU/I/O, and NATS publish latency.
+- Low DB persisted ratio: inspect message-writer durability, outbox drain, and delayed writes after the k6 run ends.
 `;
 
 fs.writeFileSync(summaryPath, markdown);
