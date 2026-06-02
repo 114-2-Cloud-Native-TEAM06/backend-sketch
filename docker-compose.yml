@@ -17,6 +17,8 @@ services:
       - NATS_URL=nats://nats:4222
       - JWT_SECRET=dev_secret_change_in_prod
       - API_VERSION=1
+      - WS_PRELOAD_ROOMS=${WS_PRELOAD_ROOMS:-true}
+      - WS_SEND_BUFFER_LIMIT_BYTES=${WS_SEND_BUFFER_LIMIT_BYTES:-1048576}
     depends_on:
       postgres:
         condition: service_healthy

@@ -29,10 +29,16 @@ export function createWebSocketServer(
   presenceStore: PresenceStore = new InMemoryPresenceStore(),
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
+  const preloadRoomsOnConnect = process.env.WS_PRELOAD_ROOMS !== 'false';
+  const sendBufferLimitBytes = Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024);
   if (isNatsEnabled()) startMessageStatusFanout(presenceStore);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (ws.bufferedAmount > sendBufferLimitBytes) {
+      ws.close(1013, 'backpressure');
+      return;
+    }
     try {
       ws.send(JSON.stringify(frame));
     } catch {
@@ -230,6 +236,8 @@ export function createWebSocketServer(
       }
     });
 
+    if (!preloadRoomsOnConnect) return;
+
     void (async () => {
       const memberships = await prisma.roomMember.findMany({
         where: { userId: user.userId },
@@ -288,7 +296,7 @@ function startMessageStatusFanout(presenceStore: PresenceStore): void {
     void (async () => {
       for await (const msg of persistedSub) {
         const event = jc.decode(msg.data) as ChatMessagePersistedEvent;
-        presenceStore.broadcastToRoom(event.room_id, {
+        presenceStore.broadcastToUser(event.sender_id, {
           type: 'message_status',
           request_id: event.request_id,
           message_id: event.message_id,
@@ -302,7 +310,7 @@ function startMessageStatusFanout(presenceStore: PresenceStore): void {
     void (async () => {
       for await (const msg of failedSub) {
         const event = jc.decode(msg.data) as ChatMessageFailedEvent;
-        presenceStore.broadcastToRoom(event.room_id, {
+        presenceStore.broadcastToUser(event.sender_id, {
           type: 'message_status',
           request_id: event.request_id,
           message_id: event.message_id,

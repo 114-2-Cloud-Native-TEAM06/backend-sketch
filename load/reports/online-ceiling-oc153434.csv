@@ -1,2 +1,0 @@
-run_id,target_users,ws_connect_attempts,ws_connected,connect_success_rate_percent,unexpected_close,ping_sent,pong_received,pong_success_rate_percent,pong_p95_seconds,stable
-oc153434-u100,100,100,100,100,0,318,300,94.34,0.01,no

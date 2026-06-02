@@ -201,6 +201,87 @@ load/reports/online-ceiling-<RUN_PREFIX>.csv
 load/reports/online-ceiling-<RUN_PREFIX>.txt
 ```
 
+## Evaluation Criteria Benchmark
+
+如果要對應作業評分標準中的「粗估每秒 1,000 名使用者各傳送 1 筆訊息」，主要跑這個單次 benchmark 即可：
+
+```bash
+docker run --rm \
+  -v "$PWD/load:/scripts" \
+  grafana/k6 run \
+  -e API_BASE=http://host.docker.internal:8080 \
+  -e WS_BASE=ws://host.docker.internal:8081 \
+  -e API_HEALTH_TIMEOUT_SECONDS=120 \
+  -e USERS=1000 \
+  -e DURATION=2m \
+  -e SEND_INTERVAL_MS=1000 \
+  -e SOCKET_LIFE_MS=120000 \
+  -e MAX_PENDING_ACKS=20 \
+  -e RUN_ID=eval-single-1000u1mps \
+  -e REPORT_DIR=/scripts/reports \
+  /scripts/ws-chat-load.js
+```
+
+這個測項會建立 1,000 個 users、500 個雙人 rooms，並讓每個 user 約每秒送 1 則訊息。輸出：
+
+```text
+load/reports/ws-chat-load-eval-single-1000u1mps.txt
+load/reports/ws-chat-load-eval-single-1000u1mps.json
+load/reports/ws-chat-load-eval-single-1000u1mps.k6-summary.json
+```
+
+跑完後查 DB 實際落庫數：
+
+```bash
+docker compose exec postgres psql -U admin -d imdb -c \
+  "SELECT count(*) FROM \"Message\" WHERE \"requestId\" LIKE 'k6-eval-single-1000u1mps-%';"
+```
+
+判讀重點：
+
+- `WebSocket 連線成功率` 接近 100%。
+- `平均送出速率` 是否接近 1,000 msg/sec。
+- `ack p95 <= 1s`。
+- `ack error rate <= 1%`。
+- `DB count / messages_sent >= 98%`。
+
+如果也想補充「同時在線人數上限」，再跑 online ceiling：
+
+```bash
+WS_PRELOAD_ROOMS=false docker compose up -d --force-recreate app
+
+API_HEALTH_TIMEOUT_SECONDS=120 \
+API_BASE=http://host.docker.internal:8080 \
+WS_BASE=ws://host.docker.internal:8081 \
+ONLINE_USER_STEPS="1000 5000 10000 20000" \
+THROUGHPUT_USERS=1000 \
+THROUGHPUT_SEND_INTERVAL_MS=1000 \
+sh load/evaluation-criteria-benchmark.sh
+```
+
+如果報告出現 `WebSocket 連線嘗試：0`，通常不是 WebSocket server 測到 0，而是 k6 在 `setup()` 建立測試 users 時連不到 REST API。先確認：
+
+```bash
+docker compose ps
+curl http://localhost:8080/health
+```
+
+Docker k6 連回本機 backend 時，常見設定：
+
+```bash
+# Docker Desktop on macOS
+API_BASE=http://host.docker.internal:8080 WS_BASE=ws://host.docker.internal:8081
+
+# Linux Docker host
+API_BASE=http://172.17.0.1:8080 WS_BASE=ws://172.17.0.1:8081
+```
+
+k6 會先等待 REST `/health`，預設最多 60 秒。若剛重建 app image 或機器較慢，可以拉長：
+
+```bash
+API_HEALTH_TIMEOUT_SECONDS=120 sh load/evaluation-criteria-benchmark.sh
+```
+
 ## 查 DB 最終 Message 筆數
 
 k6 summary 會印出本次 `RUN_ID`。用它查本次壓測實際寫入 DB 的訊息數：

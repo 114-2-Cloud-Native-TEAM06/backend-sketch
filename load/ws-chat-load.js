@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import ws from 'k6/ws';
+import { sleep } from 'k6';
 import { check } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
@@ -14,6 +15,7 @@ const MAX_PENDING_ACKS = Number(__ENV.MAX_PENDING_ACKS || 1000);
 const PASSWORD = __ENV.PASSWORD || 'password123';
 const RUN_ID = __ENV.RUN_ID || 'local';
 const REPORT_DIR = __ENV.REPORT_DIR || 'load/reports';
+const API_HEALTH_TIMEOUT_SECONDS = Number(__ENV.API_HEALTH_TIMEOUT_SECONDS || 60);
 const USERNAME_RUN_ID = RUN_ID.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'local';
 
 export const options = {
@@ -56,6 +58,31 @@ function postJson(path, body, token) {
   });
 }
 
+function describeHttpFailure(res) {
+  const body = typeof res.body === 'string' && res.body.length > 0
+    ? res.body.slice(0, 300)
+    : '<empty>';
+  const error = res.error ? ` error=${res.error}` : '';
+  return `status=${res.status}${error} body=${body}`;
+}
+
+function preflightApi() {
+  let res;
+  const deadline = Date.now() + API_HEALTH_TIMEOUT_SECONDS * 1000;
+
+  do {
+    res = http.get(`${API_BASE}/health`, { timeout: '10s' });
+    if (res.status === 200) return;
+    sleep(1);
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `API health check failed for API_BASE=${API_BASE}: ${describeHttpFailure(res)}. ` +
+    'Start the backend first, or override API_BASE. For Docker k6 on macOS use ' +
+    'http://host.docker.internal:8080; on Linux try http://172.17.0.1:8080 or Docker host networking.',
+  );
+}
+
 function registerOrLogin(index) {
   const username = `k6_${USERNAME_RUN_ID}_${index}`.slice(0, 32);
   const email = `${username}@example.com`;
@@ -78,10 +105,10 @@ function registerOrLogin(index) {
       const body = json(loginRes);
       return { token: body.token, user: body.user, username };
     }
-    throw new Error(`login failed for ${username}: ${loginRes.status} ${loginRes.body}`);
+    throw new Error(`login failed for ${username}: ${describeHttpFailure(loginRes)}`);
   }
 
-  throw new Error(`register failed for ${username}: ${registerRes.status} ${registerRes.body}`);
+  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} API_BASE=${API_BASE}`);
 }
 
 function createDirectRoom(owner, target) {
@@ -91,7 +118,7 @@ function createDirectRoom(owner, target) {
   }, owner.token);
 
   if (res.status !== 200 && res.status !== 201) {
-    throw new Error(`create room failed for ${owner.username}/${target.username}: ${res.status} ${res.body}`);
+    throw new Error(`create room failed for ${owner.username}/${target.username}: ${describeHttpFailure(res)}`);
   }
 
   return json(res).id;
@@ -99,6 +126,7 @@ function createDirectRoom(owner, target) {
 
 export function setup() {
   if (USERS % 2 !== 0) throw new Error('USERS must be an even number for direct-room pairing');
+  preflightApi();
 
   const users = [];
   for (let i = 0; i < USERS; i += 1) {
