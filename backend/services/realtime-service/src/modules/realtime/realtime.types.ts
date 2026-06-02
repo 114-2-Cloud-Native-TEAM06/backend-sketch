@@ -17,9 +17,11 @@ export interface PresenceStore {
   addClient(state: ClientState): void;
   removeClient(ws: WebSocket): ClientState | undefined;
   getClientState(ws: WebSocket): ClientState | undefined;
+  getUserSockets(userId: string): Iterable<WebSocket> | undefined;
   getRoomSockets(roomId: string): Iterable<WebSocket> | undefined;
   addSocketToRoom(state: ClientState, roomId: string): void;
   removeSocketFromRooms(state: ClientState): void;
   hasOpenSocketForUser(userId: string): boolean;
+  broadcastToUser(userId: string, frame: WsServerFrame): void;
   broadcastToRoom(roomId: string, frame: WsServerFrame): void;
 }

@@ -46,11 +46,17 @@ export function createWebSocketServer(
   redisDeps: RealtimeRedisDependencies = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
+  const preloadRoomsOnConnect = process.env.WS_PRELOAD_ROOMS !== 'false';
+  const sendBufferLimitBytes = Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024);
   const rateLimiter = createRealtimeRateLimiter(redisDeps.redis);
   const metrics = createRealtimeMetrics(rateLimiter.mode);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (ws.bufferedAmount > sendBufferLimitBytes) {
+      ws.close(1013, 'backpressure');
+      return;
+    }
     try {
       ws.send(JSON.stringify(frame));
     } catch {
@@ -313,6 +319,21 @@ export function createWebSocketServer(
         broadcastPresence(closedState, false);
       }
     });
+
+    if (!preloadRoomsOnConnect) {
+      void (async () => {
+        if (ws.readyState !== WebSocket.OPEN || presenceStore.getClientState(ws) !== state) return;
+        if (redisDeps.redis) {
+          await registerPresence(redisDeps.redis, user.userId, state.connectionId);
+        } else if (!wasOnline) {
+          broadcastPresence(state, true);
+        }
+      })().catch((err) => {
+        console.error('ws connection setup failed:', err);
+        ws.close(1011, 'internal_error');
+      });
+      return;
+    }
 
     void (async () => {
       const memberships = await prisma.roomMember.findMany({

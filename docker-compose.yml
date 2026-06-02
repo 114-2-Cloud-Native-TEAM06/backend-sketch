@@ -35,6 +35,8 @@ x-realtime-service: &realtime-service
     WS_RATE_LIMIT_MODE: "off"
     REALTIME_DISABLE_NATS_PUBLISH: "${REALTIME_DISABLE_NATS_PUBLISH:-false}"
     LOAD_METRICS_LOG_INTERVAL_MS: "${LOAD_METRICS_LOG_INTERVAL_MS:-5000}"
+    WS_PRELOAD_ROOMS: "${WS_PRELOAD_ROOMS:-true}"
+    WS_SEND_BUFFER_LIMIT_BYTES: "${WS_SEND_BUFFER_LIMIT_BYTES:-1048576}"
   depends_on:
     postgres:
       condition: service_healthy

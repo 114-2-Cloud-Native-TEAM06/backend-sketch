@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import ws from 'k6/ws';
+import { sleep } from 'k6';
 import { check } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
@@ -14,6 +15,7 @@ const PING_INTERVAL_MS = Number(__ENV.PING_INTERVAL_MS || 15000);
 const PASSWORD = __ENV.PASSWORD || 'password123';
 const RUN_ID = __ENV.RUN_ID || 'online';
 const REPORT_DIR = __ENV.REPORT_DIR || 'load/reports';
+const API_HEALTH_TIMEOUT_SECONDS = Number(__ENV.API_HEALTH_TIMEOUT_SECONDS || 60);
 const USERNAME_RUN_ID = RUN_ID.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12) || 'online';
 
 export const options = {
@@ -55,6 +57,31 @@ function postJson(path, body, token) {
   });
 }
 
+function describeHttpFailure(res) {
+  const body = typeof res.body === 'string' && res.body.length > 0
+    ? res.body.slice(0, 300)
+    : '<empty>';
+  const error = res.error ? ` error=${res.error}` : '';
+  return `status=${res.status}${error} body=${body}`;
+}
+
+function preflightApi() {
+  let res;
+  const deadline = Date.now() + API_HEALTH_TIMEOUT_SECONDS * 1000;
+
+  do {
+    res = http.get(`${USER_API_BASE}/health`, { timeout: '10s' });
+    if (res.status === 200) return;
+    sleep(1);
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `user API health check failed for USER_API_BASE=${USER_API_BASE}: ${describeHttpFailure(res)}. ` +
+    'Start the backend first, or override USER_API_BASE. For Docker k6 on macOS use ' +
+    'http://host.docker.internal:8082; on Linux try http://172.17.0.1:8082 or Docker host networking.',
+  );
+}
+
 function registerOrLogin(index) {
   const username = `on_${USERNAME_RUN_ID}_${index}`.slice(0, 32);
   const email = `${username}@example.com`;
@@ -77,13 +104,15 @@ function registerOrLogin(index) {
       const body = json(loginRes);
       return { token: body.token, user: body.user, username };
     }
-    throw new Error(`login failed for ${username}: ${loginRes.status} ${loginRes.body}`);
+    throw new Error(`login failed for ${username}: ${describeHttpFailure(loginRes)}`);
   }
 
-  throw new Error(`register failed for ${username}: ${registerRes.status} ${registerRes.body}`);
+  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} USER_API_BASE=${USER_API_BASE}`);
 }
 
 export function setup() {
+  preflightApi();
+
   const users = [];
   for (let i = 0; i < USERS; i += 1) {
     users.push(registerOrLogin(i));
