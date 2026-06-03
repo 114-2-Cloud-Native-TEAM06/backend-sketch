@@ -39,7 +39,7 @@
         "allValue": ".*",
         "current": { "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(im_db_query_duration_ms_count, service_name)",
+        "definition": "label_values(im_db_query_duration_ms_milliseconds_count, service_name)",
         "hide": 0,
         "includeAll": true,
         "label": "Service",
@@ -48,7 +48,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(im_db_query_duration_ms_count, service_name)",
+          "query": "label_values(im_db_query_duration_ms_milliseconds_count, service_name)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -92,7 +92,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (service_name) (rate(im_db_query_duration_ms_count{service_name=~\"$service\"}[$__rate_interval]))",
+          "expr": "sum by (service_name) (rate(im_db_query_duration_ms_milliseconds_count{service_name=~\"$service\"}[$__rate_interval]))",
           "legendFormat": "{{service_name}}",
           "refId": "A"
         }
@@ -116,19 +116,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(im_db_query_duration_ms_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(im_db_query_duration_ms_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(im_db_query_duration_ms_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(im_db_query_duration_ms_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(im_db_query_duration_ms_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(im_db_query_duration_ms_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -148,7 +148,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(im_db_query_duration_ms_count{service_name=~\"$service\"}[$__rate_interval]))",
+          "expr": "sum(rate(im_db_query_duration_ms_milliseconds_count{service_name=~\"$service\"}[$__rate_interval]))",
           "refId": "A"
         }
       ]
@@ -171,7 +171,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (service_name) (rate(im_db_query_duration_ms_sum{service_name=~\"$service\"}[$__rate_interval])) / sum by (service_name) (rate(im_db_query_duration_ms_count{service_name=~\"$service\"}[$__rate_interval]))",
+          "expr": "sum by (service_name) (rate(im_db_query_duration_ms_milliseconds_sum{service_name=~\"$service\"}[$__rate_interval])) / sum by (service_name) (rate(im_db_query_duration_ms_milliseconds_count{service_name=~\"$service\"}[$__rate_interval]))",
           "legendFormat": "{{service_name}}",
           "refId": "A"
         }
@@ -307,13 +307,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(im_message_fanout_duration_ms_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(im_message_fanout_duration_ms_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(im_message_fanout_duration_ms_bucket{service_name=~\"$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(im_message_fanout_duration_ms_milliseconds_bucket{service_name=~\"$service\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -350,7 +350,7 @@
       "id": 7,
       "options": {
         "mode": "markdown",
-        "content": "**Data sources used here:** `im_db_query_duration_ms` (custom, wired in shared-db) + OTel auto HTTP metrics.\n\n- If the **DB panels** are empty, the metric pipeline itself isn't reaching Grafana — check `OBSERVABILITY_ENABLED` and the OTLP metric exporter (in Explore, search `im_db_query_duration_ms_count`).\n- If the **HTTP panels** are empty, your build exports the newer semconv name — change `http_server_duration_milliseconds_*` to `http_server_request_duration_seconds_*` (and unit ms→s).\n- If the **Service** dropdown is empty, your setup labels the service as `job` instead of `service_name` — replace `service_name` with `job` throughout.\n- **WebSocket / messages / fanout** panels need `im_ws_*` / `im_messages_*` / `im_message_fanout_*` to be recorded in realtime-service first (currently defined but not called)."
+        "content": "**Data sources used here:** `im_db_query_duration_ms` (custom, wired in shared-db) + OTel auto HTTP metrics.\n\n- If the **DB panels** are empty, the metric pipeline itself isn't reaching Grafana — check `OBSERVABILITY_ENABLED` and the OTLP metric exporter (in Explore, search `im_db_query_duration_ms_milliseconds_count`).\n- If the **HTTP panels** are empty, your build exports the newer semconv name — change `http_server_duration_milliseconds_*` to `http_server_request_duration_seconds_*` (and unit ms→s).\n- If the **Service** dropdown is empty, your setup labels the service as `job` instead of `service_name` — replace `service_name` with `job` throughout.\n- **WebSocket / messages / fanout** panels need `im_ws_*` / `im_messages_*` / `im_message_fanout_*` to be recorded in realtime-service first (currently defined but not called)."
       }
     }
   ]
