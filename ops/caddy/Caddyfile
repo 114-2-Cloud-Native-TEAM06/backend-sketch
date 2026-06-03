@@ -9,9 +9,14 @@
 # Mount the built SPA at /srv/frontend (see compose.caddy.yml + FRONTEND_DIST).
 
 {$DOMAIN} {
-	# WebSocket → realtime-gateway (load-balances realtime-service-1/-2).
+	# WebSocket → realtime instances directly. Caddy re-resolves each upstream
+	# hostname per dial and load-balances, so recreating realtime never leaves a
+	# stale-IP 502 (the nginx realtime-gateway problem). Redis carries cross-
+	# instance state, so no sticky sessions are needed.
 	handle /ws/chat* {
-		reverse_proxy realtime-gateway:8081
+		reverse_proxy realtime-service-1:8081 realtime-service-2:8081 {
+			lb_policy least_conn
+		}
 	}
 
 	# Chat REST

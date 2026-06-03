@@ -19,7 +19,9 @@ import WebSocket from 'ws';
 
 const USER_API = process.env.USER_API ?? 'http://user-service:8082/api/v1';
 const CHAT_API = process.env.CHAT_API ?? 'http://chat-service:8080/api/v1';
-const WS_URL = process.env.WS_URL ?? 'ws://realtime-gateway:8081/ws/chat';
+// Connect straight to a realtime instance (not the gateway) so the load
+// generator never depends on the nginx gateway's health.
+const WS_URL = process.env.WS_URL ?? 'ws://realtime-service-1:8081/ws/chat';
 const USERS = Number(process.env.USERS ?? 20);
 const DURATION_MS = Number(process.env.DURATION_MS ?? 60_000);
 const SEND_INTERVAL_MS = Number(process.env.SEND_INTERVAL_MS ?? 1_000);
