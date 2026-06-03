@@ -3,6 +3,12 @@ import { PrismaClient } from '@prisma/client';
 import { monitorEventLoopDelay, performance } from 'perf_hooks';
 import { parse } from 'url';
 import { AppError } from '../../../../../packages/shared-errors/src/app-error.js';
+import {
+  messagesSentTotal,
+  wsErrorsTotal,
+  messageFanoutDuration,
+  observeActiveConnections,
+} from '../../../../../packages/shared-observability/src/metrics.js';
 import { verifyToken } from '../../../../../packages/shared-auth/src/jwt.js';
 import { createBufferedMessage } from '../../../../../services/chat-service/src/modules/chats/chats.service.js';
 import type { WsErrorReason, WsServerFrame } from '../../../../../packages/shared-types/src/api-types.js';
@@ -50,6 +56,8 @@ export function createWebSocketServer(
   const sendBufferLimitBytes = Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024);
   const rateLimiter = createRealtimeRateLimiter(redisDeps.redis);
   const metrics = createRealtimeMetrics(rateLimiter.mode);
+  let activeConnections = 0;
+  observeActiveConnections(() => activeConnections);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -65,6 +73,7 @@ export function createWebSocketServer(
   };
 
   const sendError = (ws: WebSocket, reason: WsErrorReason, detail?: string, requestId?: string): void => {
+    wsErrorsTotal.add(1, { reason });
     sendJson(ws, { type: 'error', reason, ...(requestId ? { request_id: requestId } : {}), ...(detail ? { detail } : {}) });
   };
 
@@ -91,6 +100,7 @@ export function createWebSocketServer(
 
     const sockets = presenceStore.getRoomSockets(event.room_id);
     if (!sockets) return;
+    const fanoutStart = performance.now();
     for (const socket of sockets) {
       const recipient = presenceStore.getClientState(socket);
       if (!recipient) continue;
@@ -98,6 +108,7 @@ export function createWebSocketServer(
       if (recipient.connectionId === event.origin_connection_id) continue;
       sendJson(socket, { type: 'msg', message: event.message });
     }
+    messageFanoutDuration.record(performance.now() - fanoutStart);
   };
 
   const unavailableMessageWritePublisher: MessageWritePublisher = {
@@ -207,6 +218,7 @@ export function createWebSocketServer(
         accepted_at: message.created_at,
       });
       metrics.recordAckSent(performance.now() - receivedAt);
+      messagesSentTotal.add(1);
     } catch (err) {
       if (err instanceof AppError) {
         sendError(state.ws, mapAppErrorToWsReason(err), err.message, frame.request_id);
@@ -272,6 +284,7 @@ export function createWebSocketServer(
     const wasOnline = presenceStore.hasOpenSocketForUser(user.userId);
     presenceStore.addClient(state);
     metrics.recordWsConnected();
+    activeConnections++;
     const presenceRefresh = setInterval(() => {
       void refreshPresence(redisDeps.redis, state.connectionId);
     }, 10_000);
@@ -304,9 +317,14 @@ export function createWebSocketServer(
       sendError(ws, 'unknown_op', 'Unknown frame type');
     });
 
+    ws.on('error', () => {
+      wsErrorsTotal.add(1, { reason: 'socket_error' });
+    });
+
     ws.on('close', () => {
       clearInterval(presenceRefresh);
       metrics.recordWsDisconnected();
+      activeConnections--;
       const closedState = presenceStore.removeClient(ws);
       if (!closedState) return;
 
