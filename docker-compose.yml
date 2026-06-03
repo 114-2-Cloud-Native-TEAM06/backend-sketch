@@ -146,7 +146,9 @@ services:
       MESSAGE_WRITER_BATCH_CONCURRENCY: "${MESSAGE_WRITER_BATCH_CONCURRENCY:-4}"
       MESSAGE_WRITER_MAX_MESSAGES: "${MESSAGE_WRITER_MAX_MESSAGES:-512}"
       MESSAGE_WRITE_MAX_ACK_PENDING: "${MESSAGE_WRITE_MAX_ACK_PENDING:-4096}"
-      MESSAGE_WRITER_DISABLE_FANOUT: "${MESSAGE_WRITER_DISABLE_FANOUT:-true}"
+      # Default ON: the writer publishes message.created to Redis so realtime
+      # instances deliver new messages live (set true only for throughput tests).
+      MESSAGE_WRITER_DISABLE_FANOUT: "${MESSAGE_WRITER_DISABLE_FANOUT:-false}"
       LOAD_METRICS_LOG_INTERVAL_MS: "${LOAD_METRICS_LOG_INTERVAL_MS:-5000}"
     depends_on:
       postgres:
