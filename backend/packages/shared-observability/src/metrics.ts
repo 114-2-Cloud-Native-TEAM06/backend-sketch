@@ -36,17 +36,12 @@ export const messageFanoutDuration = meter.createHistogram('im_message_fanout_du
   unit: 'ms',
 });
 
-const activeConnectionsGauge = meter.createObservableGauge('im_ws_active_connections', {
+/**
+ * Currently open WebSocket connections. A synchronous UpDownCounter rather than
+ * an ObservableGauge: sync instruments export reliably here, whereas async
+ * callbacks were not being collected (gauge stayed at 0). add(+1) on connect,
+ * add(-1) on close — net value is the live open-connection count.
+ */
+export const wsActiveConnections = meter.createUpDownCounter('im_ws_active_connections', {
   description: 'Currently open WebSocket connections',
 });
-
-/**
- * Register the active-connections gauge against a synchronous, O(1) getter.
- * Returns a disposer; call it on server close so callbacks don't accumulate.
- * The callback runs at export time, so it MUST stay cheap and sync.
- */
-export function observeActiveConnections(getCount: () => number): () => void {
-  const callback = (result: { observe(value: number): void }) => result.observe(getCount());
-  activeConnectionsGauge.addCallback(callback);
-  return () => activeConnectionsGauge.removeCallback(callback);
-}

@@ -7,7 +7,7 @@ import {
   messagesSentTotal,
   wsErrorsTotal,
   messageFanoutDuration,
-  observeActiveConnections,
+  wsActiveConnections,
 } from '../../../../../packages/shared-observability/src/metrics.js';
 import { verifyToken } from '../../../../../packages/shared-auth/src/jwt.js';
 import { createBufferedMessage } from '../../../../../services/chat-service/src/modules/chats/chats.service.js';
@@ -56,8 +56,6 @@ export function createWebSocketServer(
   const sendBufferLimitBytes = Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024);
   const rateLimiter = createRealtimeRateLimiter(redisDeps.redis);
   const metrics = createRealtimeMetrics(rateLimiter.mode);
-  let activeConnections = 0;
-  observeActiveConnections(() => activeConnections);
 
   const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -284,7 +282,7 @@ export function createWebSocketServer(
     const wasOnline = presenceStore.hasOpenSocketForUser(user.userId);
     presenceStore.addClient(state);
     metrics.recordWsConnected();
-    activeConnections++;
+    wsActiveConnections.add(1);
     const presenceRefresh = setInterval(() => {
       void refreshPresence(redisDeps.redis, state.connectionId);
     }, 10_000);
@@ -324,7 +322,7 @@ export function createWebSocketServer(
     ws.on('close', () => {
       clearInterval(presenceRefresh);
       metrics.recordWsDisconnected();
-      activeConnections--;
+      wsActiveConnections.add(-1);
       const closedState = presenceStore.removeClient(ws);
       if (!closedState) return;
 
