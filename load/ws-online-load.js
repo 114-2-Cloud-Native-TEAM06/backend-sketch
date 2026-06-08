@@ -5,8 +5,7 @@ import { check } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const API_BASE = __ENV.API_BASE;
-const USER_API_BASE = __ENV.USER_API_BASE || API_BASE || 'http://localhost:8082';
+const API_BASE = __ENV.API_BASE || 'http://localhost:8080';
 const WS_BASE = __ENV.WS_BASE || 'ws://localhost:8081';
 const USERS = Number(__ENV.USERS || 1000);
 const DURATION = __ENV.DURATION || '1m';
@@ -48,7 +47,7 @@ function json(res) {
 }
 
 function postJson(path, body, token) {
-  return http.post(`${USER_API_BASE}${path}`, JSON.stringify(body), {
+  return http.post(`${API_BASE}${path}`, JSON.stringify(body), {
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -70,15 +69,15 @@ function preflightApi() {
   const deadline = Date.now() + API_HEALTH_TIMEOUT_SECONDS * 1000;
 
   do {
-    res = http.get(`${USER_API_BASE}/health`, { timeout: '10s' });
+    res = http.get(`${API_BASE}/health`, { timeout: '10s' });
     if (res.status === 200) return;
     sleep(1);
   } while (Date.now() < deadline);
 
   throw new Error(
-    `user API health check failed for USER_API_BASE=${USER_API_BASE}: ${describeHttpFailure(res)}. ` +
-    'Start the backend first, or override USER_API_BASE. For Docker k6 on macOS use ' +
-    'http://host.docker.internal:8082; on Linux try http://172.17.0.1:8082 or Docker host networking.',
+    `API health check failed for API_BASE=${API_BASE}: ${describeHttpFailure(res)}. ` +
+    'Start the backend first, or override API_BASE. For Docker k6 on macOS use ' +
+    'http://host.docker.internal:8080; on Linux try http://172.17.0.1:8080 or Docker host networking.',
   );
 }
 
@@ -107,7 +106,7 @@ function registerOrLogin(index) {
     throw new Error(`login failed for ${username}: ${describeHttpFailure(loginRes)}`);
   }
 
-  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} USER_API_BASE=${USER_API_BASE}`);
+  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} API_BASE=${API_BASE}`);
 }
 
 export function setup() {
@@ -195,12 +194,9 @@ export function handleSummary(data) {
   const pongs = metricCount(data, 'pong_received');
   const pongRate = pings > 0 ? (pongs / pings) * 100 : 0;
   const pongP95 = metricP95(data, 'pong_latency_ms') / 1000;
-  const frames = metricCount(data, 'ws_frames_received');
 
   const report = {
     run_id: RUN_ID,
-    user_api_base: USER_API_BASE,
-    ws_base: WS_BASE,
     target_users: USERS,
     duration: DURATION,
     socket_hold_ms: SOCKET_HOLD_MS,
@@ -213,37 +209,33 @@ export function handleSummary(data) {
     pong_received: pongs,
     pong_success_rate_percent: Number(pongRate.toFixed(2)),
     pong_p95_seconds: Number(pongP95.toFixed(2)),
-    ws_frames_received: frames,
+    ws_frames_received: metricCount(data, 'ws_frames_received'),
   };
 
   const text = `
 WS online load-test run_id=${RUN_ID}
 
-Targets:
-user_api_base=${USER_API_BASE}
-ws_base=${WS_BASE}
+目標同時在線 users：${USERS}
+結果：
 
-Load:
-target_users=${USERS}
-duration=${DURATION}
-socket_hold_ms=${SOCKET_HOLD_MS}
-ping_interval_ms=${PING_INTERVAL_MS}
+WebSocket 連線嘗試：${attempts.toLocaleString()}
+WebSocket 連線成功：${connected.toLocaleString()}
+WebSocket 連線成功率：${successRate.toFixed(2)}%
+非預期斷線：${unexpectedClose.toLocaleString()}
+ping sent：${pings.toLocaleString()}
+pong received：${pongs.toLocaleString()}
+pong success rate：${pongRate.toFixed(2)}%
+pong p95 ≈ ${pongP95.toFixed(2)}s
+實際收到 WS frames：${metricCount(data, 'ws_frames_received').toLocaleString()}
 
-Results:
-ws_connect_attempts=${attempts.toLocaleString()}
-ws_connected=${connected.toLocaleString()}
-websocket_connect_success_rate=${successRate.toFixed(2)}%
-ws_unexpected_close=${unexpectedClose.toLocaleString()}
-ping_sent=${pings.toLocaleString()}
-pong_received=${pongs.toLocaleString()}
-pong_success_rate=${pongRate.toFixed(2)}%
-pong_p95=${pongP95.toFixed(2)}s
-ws_frames_received=${frames.toLocaleString()}
-
-Reports:
+報告已輸出：
 ${REPORT_DIR}/ws-online-load-${RUN_ID}.txt
 ${REPORT_DIR}/ws-online-load-${RUN_ID}.json
 ${REPORT_DIR}/ws-online-load-${RUN_ID}.k6-summary.json
+
+判讀：
+- 這個測項只測同時在線 / 長連線穩定度，不測訊息寫入吞吐。
+- 若連線成功率接近 100%、非預期斷線接近 0、pong p95 穩定，代表該 USERS 數可穩定同時在線。
 `;
 
   return {

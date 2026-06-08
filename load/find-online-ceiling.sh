@@ -5,9 +5,8 @@ USER_STEPS="${USER_STEPS:-100 200 500 1000 1500 2000 3000 5000}"
 DURATION="${DURATION:-1m}"
 SOCKET_HOLD_MS="${SOCKET_HOLD_MS:-60000}"
 PING_INTERVAL_MS="${PING_INTERVAL_MS:-15000}"
-USER_API_BASE="${USER_API_BASE:-${API_BASE:-http://host.docker.internal:8082}}"
+API_BASE="${API_BASE:-http://host.docker.internal:8080}"
 WS_BASE="${WS_BASE:-ws://host.docker.internal:8081}"
-API_HEALTH_TIMEOUT_SECONDS="${API_HEALTH_TIMEOUT_SECONDS:-60}"
 REPORT_DIR="${REPORT_DIR:-load/reports}"
 RUN_PREFIX="${RUN_PREFIX:-oc$(date +%H%M%S)}"
 CONNECT_SUCCESS_MIN="${CONNECT_SUCCESS_MIN:-99}"
@@ -48,9 +47,8 @@ for users in $USER_STEPS; do
   docker run --rm \
     -v "$PWD/load:/scripts" \
     grafana/k6 run \
-    -e USER_API_BASE="$USER_API_BASE" \
+    -e API_BASE="$API_BASE" \
     -e WS_BASE="$WS_BASE" \
-    -e API_HEALTH_TIMEOUT_SECONDS="$API_HEALTH_TIMEOUT_SECONDS" \
     -e USERS="$users" \
     -e DURATION="$DURATION" \
     -e SOCKET_HOLD_MS="$SOCKET_HOLD_MS" \

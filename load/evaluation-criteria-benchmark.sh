@@ -3,9 +3,7 @@ set -eu
 
 RUN_PREFIX="${RUN_PREFIX:-eval$(date +%Y%m%d%H%M%S)}"
 REPORT_DIR="${REPORT_DIR:-load/reports}"
-API_BASE="${API_BASE:-}"
-USER_API_BASE="${USER_API_BASE:-${API_BASE:-http://host.docker.internal:8082}}"
-CHAT_API_BASE="${CHAT_API_BASE:-${API_BASE:-http://host.docker.internal:8080}}"
+API_BASE="${API_BASE:-http://host.docker.internal:8080}"
 WS_BASE="${WS_BASE:-ws://host.docker.internal:8081}"
 API_HEALTH_TIMEOUT_SECONDS="${API_HEALTH_TIMEOUT_SECONDS:-60}"
 
@@ -61,7 +59,7 @@ USER_STEPS="$ONLINE_USER_STEPS" \
 DURATION="$ONLINE_DURATION" \
 SOCKET_HOLD_MS="$ONLINE_SOCKET_HOLD_MS" \
 PING_INTERVAL_MS="$ONLINE_PING_INTERVAL_MS" \
-USER_API_BASE="$USER_API_BASE" \
+API_BASE="$API_BASE" \
 WS_BASE="$WS_BASE" \
 API_HEALTH_TIMEOUT_SECONDS="$API_HEALTH_TIMEOUT_SECONDS" \
 RUN_PREFIX="$ONLINE_PREFIX" \
@@ -83,8 +81,7 @@ write_summary
 docker run --rm \
   -v "$PWD/load:/scripts" \
   grafana/k6 run \
-  -e USER_API_BASE="$USER_API_BASE" \
-  -e CHAT_API_BASE="$CHAT_API_BASE" \
+  -e API_BASE="$API_BASE" \
   -e WS_BASE="$WS_BASE" \
   -e API_HEALTH_TIMEOUT_SECONDS="$API_HEALTH_TIMEOUT_SECONDS" \
   -e USERS="$THROUGHPUT_USERS" \

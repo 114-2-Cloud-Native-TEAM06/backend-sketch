@@ -5,9 +5,7 @@ import { check } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const API_BASE = __ENV.API_BASE;
-const USER_API_BASE = __ENV.USER_API_BASE || API_BASE || 'http://localhost:8082';
-const CHAT_API_BASE = __ENV.CHAT_API_BASE || API_BASE || 'http://localhost:8080';
+const API_BASE = __ENV.API_BASE || 'http://localhost:8080';
 const WS_BASE = __ENV.WS_BASE || 'ws://localhost:8081';
 const USERS = Number(__ENV.USERS || 100);
 const DURATION = __ENV.DURATION || '2m';
@@ -50,8 +48,8 @@ function json(res) {
   }
 }
 
-function postJson(baseUrl, path, body, token) {
-  return http.post(`${baseUrl}${path}`, JSON.stringify(body), {
+function postJson(path, body, token) {
+  return http.post(`${API_BASE}${path}`, JSON.stringify(body), {
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -68,26 +66,21 @@ function describeHttpFailure(res) {
   return `status=${res.status}${error} body=${body}`;
 }
 
-function waitForHealth(baseUrl, label) {
+function preflightApi() {
   let res;
   const deadline = Date.now() + API_HEALTH_TIMEOUT_SECONDS * 1000;
 
   do {
-    res = http.get(`${baseUrl}/health`, { timeout: '10s' });
+    res = http.get(`${API_BASE}/health`, { timeout: '10s' });
     if (res.status === 200) return;
     sleep(1);
   } while (Date.now() < deadline);
 
   throw new Error(
-    `${label} health check failed for ${baseUrl}: ${describeHttpFailure(res)}. ` +
-    'Start the backend first, or override USER_API_BASE / CHAT_API_BASE. For Docker k6 on macOS use ' +
-    'host.docker.internal; on Linux try 172.17.0.1 or Docker host networking.',
+    `API health check failed for API_BASE=${API_BASE}: ${describeHttpFailure(res)}. ` +
+    'Start the backend first, or override API_BASE. For Docker k6 on macOS use ' +
+    'http://host.docker.internal:8080; on Linux try http://172.17.0.1:8080 or Docker host networking.',
   );
-}
-
-function preflightApi() {
-  waitForHealth(USER_API_BASE, 'user API');
-  waitForHealth(CHAT_API_BASE, 'chat API');
 }
 
 function registerOrLogin(index) {
@@ -100,14 +93,14 @@ function registerOrLogin(index) {
     display_name: `K6 User ${index}`,
   };
 
-  const registerRes = postJson(USER_API_BASE, '/api/v1/auth/register', payload);
+  const registerRes = postJson('/api/v1/auth/register', payload);
   if (registerRes.status === 201) {
     const body = json(registerRes);
     return { token: body.token, user: body.user, username };
   }
 
   if (registerRes.status === 409) {
-    const loginRes = postJson(USER_API_BASE, '/api/v1/auth/login', { email, password: PASSWORD });
+    const loginRes = postJson('/api/v1/auth/login', { email, password: PASSWORD });
     if (loginRes.status === 200) {
       const body = json(loginRes);
       return { token: body.token, user: body.user, username };
@@ -115,11 +108,11 @@ function registerOrLogin(index) {
     throw new Error(`login failed for ${username}: ${describeHttpFailure(loginRes)}`);
   }
 
-  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} USER_API_BASE=${USER_API_BASE}`);
+  throw new Error(`register failed for ${username}: ${describeHttpFailure(registerRes)} API_BASE=${API_BASE}`);
 }
 
 function createDirectRoom(owner, target) {
-  const res = postJson(CHAT_API_BASE, '/api/v1/chats', {
+  const res = postJson('/api/v1/chats', {
     type: 'direct',
     member_ids: [target.username],
   }, owner.token);
@@ -245,18 +238,14 @@ export function handleSummary(data) {
   const ackOk = metricCount(data, 'ack_received');
   const ackMiss = metricCount(data, 'ack_missing_on_close');
   const wsErrors = metricCount(data, 'ws_error_frames');
-  const skipped = metricCount(data, 'send_skipped_backpressure');
   const durationSec = (data.state?.testRunDurationMs || 0) / 1000;
   const sendRate = durationSec > 0 ? sent / durationSec : 0;
   const ackErrorRate = sent > 0 ? (Math.max(sent - ackOk, 0) / sent) * 100 : 0;
   const connectRate = metricRate(data, 'ws_connect_success_rate') * 100;
   const ackP95 = metricP95(data, 'ack_latency_ms') / 1000;
-  const dbCountCommand = `docker compose exec postgres psql -U admin -d imdb -c "SELECT count(*) FROM \\"Message\\" WHERE \\"requestId\\" LIKE 'k6-${RUN_ID}-%';"`;
+  const dbCountCommand = `docker compose exec postgres psql -U admin -d imdb -c "SELECT count(*) FROM \\\"Message\\\" WHERE \\\"requestId\\\" LIKE 'k6-${RUN_ID}-%';"`;
   const report = {
     run_id: RUN_ID,
-    user_api_base: USER_API_BASE,
-    chat_api_base: CHAT_API_BASE,
-    ws_base: WS_BASE,
     users: USERS,
     direct_rooms: USERS / 2,
     duration: DURATION,
@@ -271,44 +260,40 @@ export function handleSummary(data) {
     ws_error_frames: wsErrors,
     ack_p95_seconds: Number(ackP95.toFixed(2)),
     ack_error_rate_percent: Number(ackErrorRate.toFixed(2)),
-    backpressure_skipped_sends: skipped,
+    backpressure_skipped_sends: metricCount(data, 'send_skipped_backpressure'),
     db_count_command: dbCountCommand,
-    conclusion_hint: 'Compare ack latency/error rate with DB persisted count to identify realtime, writer, or DB bottlenecks.',
+    conclusion_hint: '若 WebSocket 連線成功率高，但 ack p95 高且 DB count 明顯低於 sent count，代表同步 DB 寫入路徑是瓶頸。',
   };
 
   const text = `
 NATS/WS load-test run_id=${RUN_ID}
 
-Targets:
-user_api_base=${USER_API_BASE}
-chat_api_base=${CHAT_API_BASE}
-ws_base=${WS_BASE}
+${USERS} users 分散到 ${USERS / 2} 個雙人 rooms
+結果：
 
-Load:
-users=${USERS}
-direct_rooms=${USERS / 2}
-duration=${DURATION}
-send_interval_ms=${SEND_INTERVAL_MS}
+WebSocket 連線成功率：${connectRate.toFixed(2)}%
+實際送出：${sent.toLocaleString()} messages
+平均送出速率：${sendRate.toFixed(0)} msg/sec
+實際收到 WS frames：${frames.toLocaleString()}
+ack received：${ackOk.toLocaleString()}
+ack missing on close：${ackMiss.toLocaleString()}
+WS error frames：${wsErrors.toLocaleString()}
+ack p95 ≈ ${ackP95.toFixed(2)}s
+ack error rate ≈ ${ackErrorRate.toFixed(2)}%
+backpressure skipped sends：${metricCount(data, 'send_skipped_backpressure').toLocaleString()}
 
-Results:
-websocket_connect_success_rate=${connectRate.toFixed(2)}%
-messages_sent=${sent.toLocaleString()}
-average_send_rate=${sendRate.toFixed(0)} msg/sec
-ws_frames_received=${frames.toLocaleString()}
-ack_received=${ackOk.toLocaleString()}
-ack_missing_on_close=${ackMiss.toLocaleString()}
-ws_error_frames=${wsErrors.toLocaleString()}
-ack_p95=${ackP95.toFixed(2)}s
-ack_error_rate=${ackErrorRate.toFixed(2)}%
-backpressure_skipped_sends=${skipped.toLocaleString()}
-
-DB validation:
+DB 最終 Message 筆數請另跑：
 ${dbCountCommand}
 
-Reports:
+報告已輸出：
 ${REPORT_DIR}/ws-chat-load-${RUN_ID}.txt
 ${REPORT_DIR}/ws-chat-load-${RUN_ID}.json
 ${REPORT_DIR}/ws-chat-load-${RUN_ID}.k6-summary.json
+
+判讀：
+- ack p95 代表 FE send 到收到 ack 的第 95 百分位延遲。
+- ack error rate 代表送出後沒有收到 ack、收到 WS error、或 socket 關閉時仍 pending 的比例估算。
+- 若 send rate 高但 DB count 明顯偏低，代表同步 DB 寫入路徑吃不下該吞吐。
 `;
 
   return {
