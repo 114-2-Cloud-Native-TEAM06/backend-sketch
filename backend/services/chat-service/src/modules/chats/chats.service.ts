@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { performance } from 'perf_hooks';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import type { Chat, CreateChatRequest, Message, User } from '../../../../../packages/shared-types/src/api-types.js';
 import { AppError } from '../../../../../packages/shared-errors/src/app-error.js';
@@ -67,6 +68,9 @@ export interface CreateBufferedMessageDependencies {
   publishRetryDelayMs?: number;
   originConnectionId?: string;
   membershipVerified?: boolean;
+  stageTimings?: {
+    recordPrepareMs(latencyMs: number): void;
+  };
 }
 
 function toUserDto(row: {
@@ -357,6 +361,7 @@ export async function createBufferedMessage(
   input: CreateMessageInput & { requestId: string },
   deps: CreateBufferedMessageDependencies,
 ): Promise<Message> {
+  const prepareStartedAt = performance.now();
   const body = input.body;
   if (!body || typeof body !== 'string' || !body.trim()) {
     throw new AppError(400, 'VALIDATION_FAILED', 'body is required');
@@ -386,6 +391,7 @@ export async function createBufferedMessage(
     accepted_at: acceptedAt.toISOString(),
     ...(deps.originConnectionId ? { origin_connection_id: deps.originConnectionId } : {}),
   };
+  deps.stageTimings?.recordPrepareMs(performance.now() - prepareStartedAt);
 
   try {
     await publishMessageWriteWithRetry(deps.messageWritePublisher, command, {

@@ -19,6 +19,11 @@ import {
   type RedisLike,
 } from '../../../../../packages/shared-redis/src/index.js';
 import type { MessageWritePublisher } from '../../../../../packages/shared-nats/src/index.js';
+import {
+  getOrCreateCounter,
+  getOrCreateGauge,
+  getOrCreateHistogram,
+} from '../../../../../packages/shared-observability/src/metrics.js';
 import { InMemoryPresenceStore } from './realtime.service.js';
 import type { ClientState, JwtPayload, PresenceStore } from './realtime.types.js';
 import { createRealtimeRateLimiter, type RealtimeRateLimitMode } from './realtime-rate-limit.js';
@@ -108,6 +113,10 @@ export function createWebSocketServer(
   const messageWritePublisher = instrumentMessageWritePublisher(
     redisDeps.messageWritePublisher ?? unavailableMessageWritePublisher,
     metrics,
+    {
+      timeoutMs: readPositiveInteger(process.env.REALTIME_NATS_PUBLISH_TIMEOUT_MS, 5000),
+      maxInFlight: readPositiveInteger(process.env.REALTIME_NATS_PUBLISH_MAX_IN_FLIGHT, 8192),
+    },
   );
 
   const broadcastPresenceEventToLocalClients = async (raw: string): Promise<void> => {
@@ -172,23 +181,31 @@ export function createWebSocketServer(
       sendError(state.ws, 'validation_failed', 'body is required');
       return;
     }
+    metrics.recordSendValidation(performance.now() - receivedAt);
 
+    const rateLimitStartedAt = performance.now();
     const rateLimit = await rateLimiter.check(state.user.userId, {
       keyPrefix: 'ws:send',
       limit: Number(process.env.WS_SEND_RATE_LIMIT_PER_SEC || 20),
       windowSeconds: 1,
     });
+    metrics.recordSendRateLimit(performance.now() - rateLimitStartedAt);
     if (!rateLimit.allowed) {
       metrics.recordRateLimitedSend();
       sendError(state.ws, 'rate_limited', 'Too many messages');
       return;
     }
 
-    if (!await ensureRoomIndexed(state, frame.chat_id)) {
+    const roomIndexStartedAt = performance.now();
+    const roomIndexed = await ensureRoomIndexed(state, frame.chat_id);
+    metrics.recordSendRoomIndex(performance.now() - roomIndexStartedAt);
+    if (!roomIndexed) {
       sendError(state.ws, 'forbidden', 'Not a member of this chat', frame.request_id);
       return;
     }
+    metrics.recordSendPreBuffer(performance.now() - receivedAt);
 
+    const createBufferStartedAt = performance.now();
     try {
       const message = await createBufferedMessage(prisma, {
         senderId: state.user.userId,
@@ -199,7 +216,13 @@ export function createWebSocketServer(
         messageWritePublisher,
         originConnectionId: state.connectionId,
         membershipVerified: true,
+        publishAttempts: 1,
+        publishRetryDelayMs: 0,
+        stageTimings: {
+          recordPrepareMs: metrics.recordCreateBufferPrepare,
+        },
       });
+      metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
       sendJson(state.ws, {
         type: 'ack',
         request_id: frame.request_id,
@@ -208,6 +231,7 @@ export function createWebSocketServer(
       });
       metrics.recordAckSent(performance.now() - receivedAt);
     } catch (err) {
+      metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
       if (err instanceof AppError) {
         sendError(state.ws, mapAppErrorToWsReason(err), err.message, frame.request_id);
         return;
@@ -428,13 +452,30 @@ function mapAppErrorToWsReason(err: AppError): WsErrorReason {
 function instrumentMessageWritePublisher(
   publisher: MessageWritePublisher,
   metrics: RealtimeMetrics,
+  options: { timeoutMs: number; maxInFlight: number },
 ): MessageWritePublisher {
+  const timeoutMs = Math.max(1, options.timeoutMs);
+  const maxInFlight = Math.max(1, options.maxInFlight);
+  let inFlight = 0;
+
   return {
     async publishMessageWrite(command): Promise<void> {
+      if (inFlight >= maxInFlight) {
+        metrics.recordNatsPublishSkipped();
+        throw new Error('message write publisher saturated');
+      }
+
       const startedAt = performance.now();
       metrics.recordNatsPublishStarted();
+      inFlight += 1;
+      const trackedPublish = publisher.publishMessageWrite(command)
+        .finally(() => {
+          inFlight = Math.max(0, inFlight - 1);
+        });
+      trackedPublish.catch(() => undefined);
+
       try {
-        await publisher.publishMessageWrite(command);
+        await withTimeout(trackedPublish, timeoutMs);
         metrics.recordNatsPublishSucceeded(performance.now() - startedAt);
       } catch (err) {
         metrics.recordNatsPublishFailed(performance.now() - startedAt);
@@ -442,6 +483,19 @@ function instrumentMessageWritePublisher(
       }
     },
   };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`message write publish timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 }
 
 type RealtimeCounters = {
@@ -460,6 +514,7 @@ type RealtimeMetrics = ReturnType<typeof createRealtimeMetrics>;
 
 function createRealtimeMetrics(rateLimitMode: RealtimeRateLimitMode) {
   const intervalMs = Number(process.env.LOAD_METRICS_LOG_INTERVAL_MS || 5000);
+  const prometheus = createRealtimePrometheusMetrics();
   const counters: RealtimeCounters = {
     ws_connected: 0,
     send_frame_received: 0,
@@ -473,6 +528,12 @@ function createRealtimeMetrics(rateLimitMode: RealtimeRateLimitMode) {
   };
   const publishLatency = createLatencyTracker();
   const ackLatency = createLatencyTracker();
+  const sendValidationLatency = createLatencyTracker();
+  const sendRateLimitLatency = createLatencyTracker();
+  const sendRoomIndexLatency = createLatencyTracker();
+  const sendPreBufferLatency = createLatencyTracker();
+  const createBufferPrepareLatency = createLatencyTracker();
+  const createBufferTotalLatency = createLatencyTracker();
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   eventLoopDelay.enable();
 
@@ -485,11 +546,20 @@ function createRealtimeMetrics(rateLimitMode: RealtimeRateLimitMode) {
         ...counters,
         publish_latency_ms: publishLatency.snapshotAndReset(),
         ack_latency_ms: ackLatency.snapshotAndReset(),
+        stage_latency_ms: {
+          send_validation: sendValidationLatency.snapshotAndReset(),
+          send_rate_limit: sendRateLimitLatency.snapshotAndReset(),
+          send_room_index: sendRoomIndexLatency.snapshotAndReset(),
+          send_pre_buffer: sendPreBufferLatency.snapshotAndReset(),
+          create_buffer_prepare: createBufferPrepareLatency.snapshotAndReset(),
+          create_buffer_total: createBufferTotalLatency.snapshotAndReset(),
+        },
         event_loop_lag_ms: {
           avg: roundMs(eventLoopDelay.mean / 1_000_000),
           max: roundMs(eventLoopDelay.max / 1_000_000),
         },
       };
+      prometheus.setEventLoopLag(snapshot.event_loop_lag_ms.avg, snapshot.event_loop_lag_ms.max);
       eventLoopDelay.reset();
       console.log(JSON.stringify(snapshot));
     }, intervalMs)
@@ -499,40 +569,156 @@ function createRealtimeMetrics(rateLimitMode: RealtimeRateLimitMode) {
   return {
     recordWsConnected(): void {
       counters.ws_connected += 1;
+      prometheus.setWsConnected(counters.ws_connected);
     },
     recordWsDisconnected(): void {
       counters.ws_connected = Math.max(0, counters.ws_connected - 1);
+      prometheus.setWsConnected(counters.ws_connected);
     },
     recordSendFrameReceived(): void {
       counters.send_frame_received += 1;
+      prometheus.recordSendFrameReceived();
     },
     recordRateLimitedSend(): void {
       counters.send_rate_limited += 1;
+      prometheus.recordRateLimitedSend();
     },
     recordRateLimitedTyping(): void {
       counters.typing_rate_limited += 1;
+      prometheus.recordRateLimitedTyping();
     },
     recordNatsPublishStarted(): void {
       counters.nats_publish_started += 1;
+      prometheus.recordNatsPublish('started');
     },
     recordNatsPublishSucceeded(latencyMs: number): void {
       counters.nats_publish_succeeded += 1;
       publishLatency.add(latencyMs);
+      prometheus.recordNatsPublish('succeeded', latencyMs);
     },
     recordNatsPublishFailed(latencyMs: number): void {
       counters.nats_publish_failed += 1;
       publishLatency.add(latencyMs);
+      prometheus.recordNatsPublish('failed', latencyMs);
     },
     recordNatsPublishSkipped(): void {
       counters.nats_publish_skipped += 1;
+      prometheus.recordNatsPublish('skipped');
+    },
+    recordSendValidation(latencyMs: number): void {
+      sendValidationLatency.add(latencyMs);
+      prometheus.recordStageLatency('send_validation', latencyMs);
+    },
+    recordSendRateLimit(latencyMs: number): void {
+      sendRateLimitLatency.add(latencyMs);
+      prometheus.recordStageLatency('send_rate_limit', latencyMs);
+    },
+    recordSendRoomIndex(latencyMs: number): void {
+      sendRoomIndexLatency.add(latencyMs);
+      prometheus.recordStageLatency('send_room_index', latencyMs);
+    },
+    recordSendPreBuffer(latencyMs: number): void {
+      sendPreBufferLatency.add(latencyMs);
+      prometheus.recordStageLatency('send_pre_buffer', latencyMs);
+    },
+    recordCreateBufferPrepare(latencyMs: number): void {
+      createBufferPrepareLatency.add(latencyMs);
+      prometheus.recordStageLatency('create_buffer_prepare', latencyMs);
+    },
+    recordCreateBufferTotal(latencyMs: number): void {
+      createBufferTotalLatency.add(latencyMs);
+      prometheus.recordStageLatency('create_buffer_total', latencyMs);
     },
     recordAckSent(latencyMs: number): void {
       counters.ack_sent += 1;
       ackLatency.add(latencyMs);
+      prometheus.recordAckSent(latencyMs);
     },
     close(): void {
       if (timer) clearInterval(timer);
       eventLoopDelay.disable();
+    },
+  };
+}
+
+function createRealtimePrometheusMetrics() {
+  const wsConnected = getOrCreateGauge({
+    name: 'backend_realtime_ws_connected',
+    help: 'Current open WebSocket connections on this realtime service instance.',
+  });
+  const sendFramesTotal = getOrCreateCounter({
+    name: 'backend_realtime_send_frames_total',
+    help: 'Total WebSocket send frames received.',
+  });
+  const sendRateLimitedTotal = getOrCreateCounter({
+    name: 'backend_realtime_send_rate_limited_total',
+    help: 'Total WebSocket send frames rejected by rate limiting.',
+  });
+  const typingRateLimitedTotal = getOrCreateCounter({
+    name: 'backend_realtime_typing_rate_limited_total',
+    help: 'Total WebSocket typing frames rejected by rate limiting.',
+  });
+  const natsPublishTotal = getOrCreateCounter({
+    name: 'backend_realtime_nats_publish_total',
+    help: 'Total message write NATS publish attempts by result.',
+    labelNames: ['result'],
+  });
+  const ackSentTotal = getOrCreateCounter({
+    name: 'backend_realtime_ack_sent_total',
+    help: 'Total WebSocket ack frames sent.',
+  });
+  const publishLatency = getOrCreateHistogram({
+    name: 'backend_realtime_publish_latency_ms',
+    help: 'Message write NATS publish latency in milliseconds.',
+    labelNames: ['result'],
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  });
+  const ackLatency = getOrCreateHistogram({
+    name: 'backend_realtime_ack_latency_ms',
+    help: 'WebSocket send-to-ack latency in milliseconds.',
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  });
+  const stageLatency = getOrCreateHistogram({
+    name: 'backend_realtime_stage_latency_ms',
+    help: 'Realtime send pipeline stage latency in milliseconds.',
+    labelNames: ['stage'],
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  });
+  const eventLoopLag = getOrCreateGauge({
+    name: 'backend_realtime_event_loop_lag_ms',
+    help: 'Realtime service event loop lag in milliseconds.',
+    labelNames: ['stat'],
+  });
+
+  return {
+    setWsConnected(value: number): void {
+      wsConnected.set(value);
+    },
+    recordSendFrameReceived(): void {
+      sendFramesTotal.inc();
+    },
+    recordRateLimitedSend(): void {
+      sendRateLimitedTotal.inc();
+    },
+    recordRateLimitedTyping(): void {
+      typingRateLimitedTotal.inc();
+    },
+    recordNatsPublish(result: 'started' | 'succeeded' | 'failed' | 'skipped', latencyMs?: number): void {
+      natsPublishTotal.labels(result).inc();
+      if (latencyMs !== undefined && (result === 'succeeded' || result === 'failed')) {
+        publishLatency.labels(result).observe(Math.max(0, latencyMs));
+      }
+    },
+    recordStageLatency(stage: string, latencyMs: number): void {
+      stageLatency.labels(stage).observe(Math.max(0, latencyMs));
+    },
+    recordAckSent(latencyMs: number): void {
+      ackSentTotal.inc();
+      ackLatency.observe(Math.max(0, latencyMs));
+    },
+    setEventLoopLag(avgMs: number, maxMs: number): void {
+      eventLoopLag.labels('avg').set(avgMs);
+      eventLoopLag.labels('max').set(maxMs);
     },
   };
 }
@@ -571,4 +757,10 @@ function createLatencyTracker(maxSamples = Number(process.env.LOAD_METRICS_MAX_L
 
 function roundMs(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.trunc(parsed);
 }

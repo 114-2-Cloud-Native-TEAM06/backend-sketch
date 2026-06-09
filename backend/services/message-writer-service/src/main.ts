@@ -7,8 +7,7 @@ import {
   connectNats,
   decodeMessageWriteCommand,
   ensureMessageWriteConsumer,
-  MESSAGE_WRITE_CONSUMER,
-  MESSAGE_WRITE_STREAM,
+  messageWriteShardForIndex,
   type MessageWriteCommand,
 } from '../../../packages/shared-nats/src/index.js';
 import {
@@ -16,6 +15,12 @@ import {
   disconnectRedisClients,
   type RedisClients,
 } from '../../../packages/shared-redis/src/index.js';
+import {
+  getOrCreateCounter,
+  getOrCreateGauge,
+  getOrCreateHistogram,
+  startMetricsServer,
+} from '../../../packages/shared-observability/src/metrics.js';
 import {
   drainMessageOutbox,
   processMessageWriteCommand,
@@ -31,6 +36,7 @@ export interface MessageWriterDependencies {
   batchConcurrency?: number;
   maxDeliveryAttempts?: number;
   disableFanout?: boolean;
+  shardIndex?: number;
 }
 
 export interface MessageWriterHandle {
@@ -46,15 +52,17 @@ export async function startMessageWriter({
   batchConcurrency = Number(process.env.MESSAGE_WRITER_BATCH_CONCURRENCY || process.env.MESSAGE_WRITER_CONCURRENCY || 4),
   maxDeliveryAttempts = Number(process.env.MESSAGE_WRITE_MAX_DELIVER || 5),
   disableFanout = process.env.MESSAGE_WRITER_DISABLE_FANOUT === 'true',
+  shardIndex = Number(process.env.MESSAGE_WRITE_SHARD_INDEX || 0),
 }: MessageWriterDependencies): Promise<MessageWriterHandle> {
-  await ensureMessageWriteConsumer(nats);
+  const shard = messageWriteShardForIndex(shardIndex);
+  await ensureMessageWriteConsumer(nats, shard);
   const metrics = createWriterMetrics();
 
   const maxBatchSize = Math.max(1, batchSize);
   const maxBatchConcurrency = Math.max(1, batchConcurrency);
   const flushDelayMs = Math.max(0, batchFlushMs);
   const js = nats.jetstream();
-  const consumer = await js.consumers.get(MESSAGE_WRITE_STREAM, MESSAGE_WRITE_CONSUMER);
+  const consumer = await js.consumers.get(shard.stream, shard.consumer);
   const messages = await consumer.consume({
     max_messages: Number(process.env.MESSAGE_WRITER_MAX_MESSAGES || 512),
     expires: Number(process.env.MESSAGE_WRITER_EXPIRES_MS || 1000),
@@ -281,14 +289,17 @@ function readDeliveryAttempt(msg: JsMsg): number {
 }
 
 async function main(): Promise<void> {
+  const metricsServer = startMetricsServer('message-writer-service', Number(process.env.MESSAGE_WRITER_METRICS_PORT || process.env.METRICS_PORT || 9092));
   const prisma = createPrismaClient();
   const nats = await connectNats();
   const redisClients = await createRedisClients();
   const writer = await startMessageWriter({ prisma, nats, redisClients });
-  console.log(`message-writer-service consuming ${MESSAGE_WRITE_STREAM}/${MESSAGE_WRITE_CONSUMER}`);
+  const shard = messageWriteShardForIndex(Number(process.env.MESSAGE_WRITE_SHARD_INDEX || 0));
+  console.log(`message-writer-service consuming ${shard.stream}/${shard.consumer} from ${process.env.NATS_URL || 'nats://localhost:4222'}`);
 
   const shutdown = async (): Promise<void> => {
     await writer.close();
+    metricsServer?.close();
     await disconnectRedisClients(redisClients);
     await nats.drain();
     await prisma.$disconnect();
@@ -313,6 +324,7 @@ type WriterMetrics = ReturnType<typeof createWriterMetrics>;
 
 function createWriterMetrics() {
   const intervalMs = Number(process.env.LOAD_METRICS_LOG_INTERVAL_MS || 5000);
+  const prometheus = createWriterPrometheusMetrics();
   const batchDuration = createLatencyTracker();
   const batchSize = createLatencyTracker();
   const state = {
@@ -350,6 +362,7 @@ function createWriterMetrics() {
           max: roundMs(eventLoopDelay.max / 1_000_000),
         },
       };
+      prometheus.setEventLoopLag(snapshot.event_loop_lag_ms.avg, snapshot.event_loop_lag_ms.max);
       eventLoopDelay.reset();
       console.log(JSON.stringify(snapshot));
     }, intervalMs)
@@ -361,6 +374,7 @@ function createWriterMetrics() {
       state.current_batch_size = currentBatchSize;
       state.pending_batches = pendingBatches;
       state.in_flight_batches = inFlightBatches;
+      prometheus.setQueueState(currentBatchSize, pendingBatches, inFlightBatches);
     },
     recordBatchSuccess(commands: number, createdMessages: number, durationMs: number): void {
       counters.batch_success += 1;
@@ -368,22 +382,108 @@ function createWriterMetrics() {
       counters.messages_created += createdMessages;
       batchSize.add(commands);
       batchDuration.add(durationMs);
+      prometheus.recordBatchSuccess(commands, createdMessages, durationMs);
     },
     recordBatchFailure(commands: number, durationMs: number): void {
       counters.batch_failure += 1;
       batchSize.add(commands);
       batchDuration.add(durationMs);
+      prometheus.recordBatchFailure(commands, durationMs);
     },
     recordBatchSplit(commands: number): void {
       counters.batch_split += 1;
       counters.batch_split_commands += commands;
+      prometheus.recordBatchSplit(commands);
     },
     recordDeadCommand(): void {
       counters.dead_commands += 1;
+      prometheus.recordDeadCommand();
     },
     close(): void {
       if (timer) clearInterval(timer);
       eventLoopDelay.disable();
+    },
+  };
+}
+
+function createWriterPrometheusMetrics() {
+  const batchesTotal = getOrCreateCounter({
+    name: 'backend_message_writer_batches_total',
+    help: 'Total message writer batches by result.',
+    labelNames: ['result'],
+  });
+  const batchSplitCommandsTotal = getOrCreateCounter({
+    name: 'backend_message_writer_batch_split_commands_total',
+    help: 'Total commands in message writer batches that were split.',
+  });
+  const commandsPersistedTotal = getOrCreateCounter({
+    name: 'backend_message_writer_commands_persisted_total',
+    help: 'Total message write commands persisted by the writer.',
+  });
+  const messagesCreatedTotal = getOrCreateCounter({
+    name: 'backend_message_writer_messages_created_total',
+    help: 'Total Message rows created by the writer.',
+  });
+  const deadCommandsTotal = getOrCreateCounter({
+    name: 'backend_message_writer_dead_commands_total',
+    help: 'Total message write commands discarded after max delivery attempts.',
+  });
+  const currentBatchSize = getOrCreateGauge({
+    name: 'backend_message_writer_current_batch_size',
+    help: 'Current open message writer batch size.',
+  });
+  const pendingBatches = getOrCreateGauge({
+    name: 'backend_message_writer_pending_batches',
+    help: 'Message writer batches waiting for processing.',
+  });
+  const inFlightBatches = getOrCreateGauge({
+    name: 'backend_message_writer_in_flight_batches',
+    help: 'Message writer batches currently being processed.',
+  });
+  const batchSize = getOrCreateHistogram({
+    name: 'backend_message_writer_batch_size',
+    help: 'Message writer batch sizes.',
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000],
+  });
+  const batchDuration = getOrCreateHistogram({
+    name: 'backend_message_writer_batch_duration_ms',
+    help: 'Message writer batch processing duration in milliseconds.',
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  });
+  const eventLoopLag = getOrCreateGauge({
+    name: 'backend_message_writer_event_loop_lag_ms',
+    help: 'Message writer event loop lag in milliseconds.',
+    labelNames: ['stat'],
+  });
+
+  return {
+    setQueueState(currentBatch: number, pending: number, inFlight: number): void {
+      currentBatchSize.set(currentBatch);
+      pendingBatches.set(pending);
+      inFlightBatches.set(inFlight);
+    },
+    recordBatchSuccess(commands: number, createdMessages: number, durationMs: number): void {
+      batchesTotal.labels('success').inc();
+      commandsPersistedTotal.inc(commands);
+      messagesCreatedTotal.inc(createdMessages);
+      batchSize.observe(commands);
+      batchDuration.observe(Math.max(0, durationMs));
+    },
+    recordBatchFailure(commands: number, durationMs: number): void {
+      batchesTotal.labels('failure').inc();
+      batchSize.observe(commands);
+      batchDuration.observe(Math.max(0, durationMs));
+    },
+    recordBatchSplit(commands: number): void {
+      batchesTotal.labels('split').inc();
+      batchSplitCommandsTotal.inc(commands);
+    },
+    recordDeadCommand(): void {
+      deadCommandsTotal.inc();
+    },
+    setEventLoopLag(avgMs: number, maxMs: number): void {
+      eventLoopLag.labels('avg').set(avgMs);
+      eventLoopLag.labels('max').set(maxMs);
     },
   };
 }
