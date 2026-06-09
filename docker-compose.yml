@@ -116,9 +116,11 @@ services:
 
   realtime-service-1:
     <<: *realtime-service
+    hostname: realtime-1
 
   realtime-service-2:
     <<: *realtime-service
+    hostname: realtime-2
 
   realtime-gateway:
     image: nginx:1.27-alpine
