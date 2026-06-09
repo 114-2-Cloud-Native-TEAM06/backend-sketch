@@ -259,8 +259,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(im_ws_active_connections{service_name=~\"$service\"})",
-          "legendFormat": "connections",
+          "expr": "sum by (service_instance_id) (im_ws_active_connections{service_name=~\"$service\"})",
+          "legendFormat": "{{service_instance_id}}",
           "refId": "A"
         }
       ]
