@@ -23,6 +23,10 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { RedactingSpanProcessor } from './redacting-span-processor.js';
 
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME ?? 'im-backend';
+// Unique per running container (Docker sets HOSTNAME to the container id), so
+// replicas of the same service (e.g. realtime-service-1/-2) become distinct
+// series instead of colliding under one label.
+const SERVICE_INSTANCE_ID = process.env.HOSTNAME ?? `${SERVICE_NAME}-${process.pid}`;
 const OTLP_ENDPOINT = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318').replace(/\/$/, '');
 const PYROSCOPE_ENDPOINT = process.env.PYROSCOPE_SERVER_ADDRESS ?? 'http://localhost:4040';
 const PYROSCOPE_AUTH_USER = process.env.PYROSCOPE_BASIC_AUTH_USER;
@@ -35,6 +39,7 @@ const sdk = new NodeSDK({
   resource: resourceFromAttributes({
     [ATTR_SERVICE_NAME]: SERVICE_NAME,
     [ATTR_SERVICE_VERSION]: process.env.npm_package_version ?? '1.0.0',
+    'service.instance.id': SERVICE_INSTANCE_ID,
   }),
   spanProcessors: [
     new RedactingSpanProcessor(),
