@@ -164,7 +164,7 @@ test('message write worker persists a batch of commands and drains outbox fanout
   ], { publisher: redis });
 
   // Assert
-  expect(messages.map((message) => message.id).sort()).toEqual(['msg-batch-1', 'msg-batch-2']);
+  expect(messages.map((message) => message.id).sort((a, b) => a.localeCompare(b))).toEqual(['msg-batch-1', 'msg-batch-2']);
   const persistedMessages = await prisma.message.findMany({ orderBy: { id: 'asc' } });
   const updatedWrites = await prisma.messageWrite.findMany({ orderBy: { id: 'asc' } });
   const updatedRoom = await prisma.room.findUniqueOrThrow({ where: { id: room.id } });

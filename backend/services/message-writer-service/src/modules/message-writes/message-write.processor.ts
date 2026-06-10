@@ -85,7 +85,7 @@ export async function processMessageWriteCommands(
 
   const deduped = dedupeMessageWriteCommands(commands);
   const batchJson = messageWriteBatchJson(deduped, deps.originConnectionId);
-  const roomIds = [...new Set(deduped.map((command) => command.room_id))].sort();
+  const roomIds = [...new Set(deduped.map((command) => command.room_id))].sort((a, b) => a.localeCompare(b));
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`
