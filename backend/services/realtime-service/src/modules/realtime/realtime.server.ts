@@ -1,7 +1,8 @@
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { PrismaClient } from '@prisma/client';
 import { monitorEventLoopDelay, performance } from 'perf_hooks';
 import { parse } from 'url';
+import type { IncomingMessage } from 'http';
 import { AppError } from '../../../../../packages/shared-errors/src/app-error.js';
 import { verifyToken } from '../../../../../packages/shared-auth/src/jwt.js';
 import { createBufferedMessage } from '../../../../../services/chat-service/src/modules/chats/chats.service.js';
@@ -37,11 +38,26 @@ type LatencySnapshot = {
   max_ms: number;
 };
 
+type RealtimeRateLimiter = ReturnType<typeof createRealtimeRateLimiter>;
+type SendFrame = RawFrame & { request_id: string; chat_id: string; body: string };
+type TypingFrame = RawFrame & { chat_id: string; is_typing: boolean };
+
 export interface RealtimeRedisDependencies {
   redis?: RedisLike;
   publisher?: RedisLike;
   subscriber?: RedisLike;
   messageWritePublisher?: MessageWritePublisher;
+}
+
+interface RealtimeServerContext {
+  prisma: PrismaClient;
+  presenceStore: PresenceStore;
+  redisDeps: RealtimeRedisDependencies;
+  preloadRoomsOnConnect: boolean;
+  sendBufferLimitBytes: number;
+  rateLimiter: RealtimeRateLimiter;
+  metrics: RealtimeMetrics;
+  messageWritePublisher: MessageWritePublisher;
 }
 
 export function createWebSocketServer(
@@ -51,346 +67,511 @@ export function createWebSocketServer(
   redisDeps: RealtimeRedisDependencies = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ port });
-  const preloadRoomsOnConnect = process.env.WS_PRELOAD_ROOMS !== 'false';
-  const sendBufferLimitBytes = Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024);
+  const context = createRealtimeServerContext(prisma, presenceStore, redisDeps);
+
+  subscribeRedisEvents(context);
+  wss.on('connection', (ws: WebSocket, req) => handleConnection(context, ws, req));
+
+  wss.on('close', () => {
+    context.metrics.close();
+  });
+
+  return wss;
+}
+
+function createRealtimeServerContext(
+  prisma: PrismaClient,
+  presenceStore: PresenceStore,
+  redisDeps: RealtimeRedisDependencies,
+): RealtimeServerContext {
   const rateLimiter = createRealtimeRateLimiter(redisDeps.redis);
   const metrics = createRealtimeMetrics(rateLimiter.mode);
 
-  const sendJson = (ws: WebSocket, frame: WsServerFrame): void => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    if (ws.bufferedAmount > sendBufferLimitBytes) {
-      ws.close(1013, 'backpressure');
-      return;
-    }
-    try {
-      ws.send(JSON.stringify(frame));
-    } catch {
-      // Ignore per-socket send failures; close cleanup removes dead sockets.
-    }
+  return {
+    prisma,
+    presenceStore,
+    redisDeps,
+    preloadRoomsOnConnect: process.env.WS_PRELOAD_ROOMS !== 'false',
+    sendBufferLimitBytes: Number(process.env.WS_SEND_BUFFER_LIMIT_BYTES || 1024 * 1024),
+    rateLimiter,
+    metrics,
+    messageWritePublisher: createInstrumentedMessageWritePublisher(redisDeps.messageWritePublisher, metrics),
   };
+}
 
-  const sendError = (ws: WebSocket, reason: WsErrorReason, detail?: string, requestId?: string): void => {
-    sendJson(ws, { type: 'error', reason, ...(requestId ? { request_id: requestId } : {}), ...(detail ? { detail } : {}) });
-  };
-
-  const broadcastPresence = (state: ClientState, online: boolean): void => {
-    const recipients = new Set<WebSocket>();
-    for (const roomId of state.roomIds) {
-      const sockets = presenceStore.getRoomSockets(roomId);
-      if (!sockets) continue;
-      for (const socket of sockets) {
-        const recipient = presenceStore.getClientState(socket);
-        if (!recipient || recipient.user.userId === state.user.userId) continue;
-        recipients.add(socket);
-      }
-    }
-
-    for (const socket of recipients) {
-      sendJson(socket, { type: 'presence', user_id: state.user.userId, online });
-    }
-  };
-
-  const broadcastRoomEventToLocalClients = (raw: string): void => {
-    const event = parseRoomEvent(raw);
-    if (!event || event.type !== 'message.created') return;
-
-    const sockets = presenceStore.getRoomSockets(event.room_id);
-    if (!sockets) return;
-    for (const socket of sockets) {
-      const recipient = presenceStore.getClientState(socket);
-      if (!recipient) continue;
-      if (recipient.user.userId === event.message.sender_id) continue;
-      if (recipient.connectionId === event.origin_connection_id) continue;
-      sendJson(socket, { type: 'msg', message: event.message });
-    }
-  };
-
-  const unavailableMessageWritePublisher: MessageWritePublisher = {
-    async publishMessageWrite(): Promise<void> {
-      throw new Error('message write publisher unavailable');
-    },
-  };
-  const messageWritePublisher = instrumentMessageWritePublisher(
-    redisDeps.messageWritePublisher ?? unavailableMessageWritePublisher,
+function createInstrumentedMessageWritePublisher(
+  publisher: MessageWritePublisher | undefined,
+  metrics: RealtimeMetrics,
+): MessageWritePublisher {
+  return instrumentMessageWritePublisher(
+    publisher ?? unavailableMessageWritePublisher(),
     metrics,
     {
       timeoutMs: readPositiveInteger(process.env.REALTIME_NATS_PUBLISH_TIMEOUT_MS, 5000),
       maxInFlight: readPositiveInteger(process.env.REALTIME_NATS_PUBLISH_MAX_IN_FLIGHT, 8192),
     },
   );
+}
 
-  const broadcastPresenceEventToLocalClients = async (raw: string): Promise<void> => {
-    const event = parsePresenceEvent(raw);
-    if (!event) return;
-
-    const memberships = await prisma.roomMember.findMany({
-      where: { userId: event.user_id },
-      select: { roomId: true },
-    });
-    const recipients = new Set<WebSocket>();
-    for (const membership of memberships) {
-      const sockets = presenceStore.getRoomSockets(membership.roomId);
-      if (!sockets) continue;
-      for (const socket of sockets) {
-        const recipient = presenceStore.getClientState(socket);
-        if (!recipient || recipient.user.userId === event.user_id) continue;
-        recipients.add(socket);
-      }
-    }
-    for (const socket of recipients) {
-      sendJson(socket, { type: 'presence', user_id: event.user_id, online: event.online });
-    }
+function unavailableMessageWritePublisher(): MessageWritePublisher {
+  return {
+    async publishMessageWrite(): Promise<void> {
+      throw new Error('message write publisher unavailable');
+    },
   };
+}
 
-  if (redisDeps.subscriber) {
-    void redisDeps.subscriber.pSubscribe(ROOM_EVENT_PATTERN, broadcastRoomEventToLocalClients).catch((err) => {
-      console.error('redis room event subscription failed:', err);
-    });
-    void redisDeps.subscriber.pSubscribe(PRESENCE_CHANNEL, (message) => {
-      void broadcastPresenceEventToLocalClients(message);
-    }).catch((err) => {
-      console.error('redis presence subscription failed:', err);
-    });
+function subscribeRedisEvents(context: RealtimeServerContext): void {
+  const { subscriber } = context.redisDeps;
+  if (!subscriber) return;
+
+  void subscriber.pSubscribe(ROOM_EVENT_PATTERN, (message) => {
+    broadcastRoomEventToLocalClients(context, message);
+  }).catch((err) => {
+    console.error('redis room event subscription failed:', err);
+  });
+
+  void subscriber.pSubscribe(PRESENCE_CHANNEL, (message) => {
+    void broadcastPresenceEventToLocalClients(context, message);
+  }).catch((err) => {
+    console.error('redis presence subscription failed:', err);
+  });
+}
+
+function sendJson(context: RealtimeServerContext, ws: WebSocket, frame: WsServerFrame): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > context.sendBufferLimitBytes) {
+    ws.close(1013, 'backpressure');
+    return;
   }
 
-  const ensureRoomIndexed = async (state: ClientState, roomId: string): Promise<boolean> => {
-    if (state.roomIds.has(roomId)) return true;
+  try {
+    ws.send(JSON.stringify(frame));
+  } catch {
+    // Ignore per-socket send failures; close cleanup removes dead sockets.
+  }
+}
 
-    const membership = await prisma.roomMember.findUnique({
-      where: { userId_roomId: { userId: state.user.userId, roomId } },
-    });
-    if (!membership) return false;
+function sendError(
+  context: RealtimeServerContext,
+  ws: WebSocket,
+  reason: WsErrorReason,
+  detail?: string,
+  requestId?: string,
+): void {
+  sendJson(context, ws, {
+    type: 'error',
+    reason,
+    ...(requestId ? { request_id: requestId } : {}),
+    ...(detail ? { detail } : {}),
+  });
+}
 
-    presenceStore.addSocketToRoom(state, roomId);
-    return true;
-  };
+function broadcastPresence(context: RealtimeServerContext, state: ClientState, online: boolean): void {
+  for (const socket of collectPresenceRecipients(context.presenceStore, state, state.user.userId)) {
+    sendJson(context, socket, { type: 'presence', user_id: state.user.userId, online });
+  }
+}
 
-  const handleSend = async (state: ClientState, frame: RawFrame): Promise<void> => {
-    const receivedAt = performance.now();
-    metrics.recordSendFrameReceived();
+function collectPresenceRecipients(
+  presenceStore: PresenceStore,
+  state: ClientState,
+  excludedUserId: string,
+): Set<WebSocket> {
+  const recipients = new Set<WebSocket>();
+  for (const roomId of state.roomIds) {
+    collectRoomRecipients(presenceStore, roomId, excludedUserId).forEach((socket) => recipients.add(socket));
+  }
+  return recipients;
+}
 
-    if (typeof frame.request_id !== 'string' || !frame.request_id) {
-      sendError(state.ws, 'validation_failed', 'request_id is required');
-      return;
-    }
-    if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
-      sendError(state.ws, 'validation_failed', 'chat_id is required');
-      return;
-    }
-    if (typeof frame.body !== 'string' || !frame.body.trim()) {
-      sendError(state.ws, 'validation_failed', 'body is required');
-      return;
-    }
-    metrics.recordSendValidation(performance.now() - receivedAt);
+function collectRoomRecipients(
+  presenceStore: PresenceStore,
+  roomId: string,
+  excludedUserId: string,
+): Set<WebSocket> {
+  const recipients = new Set<WebSocket>();
+  const sockets = presenceStore.getRoomSockets(roomId);
+  if (!sockets) return recipients;
 
-    const rateLimitStartedAt = performance.now();
-    const rateLimit = await rateLimiter.check(state.user.userId, {
-      keyPrefix: 'ws:send',
-      limit: Number(process.env.WS_SEND_RATE_LIMIT_PER_SEC || 20),
-      windowSeconds: 1,
-    });
-    metrics.recordSendRateLimit(performance.now() - rateLimitStartedAt);
-    if (!rateLimit.allowed) {
-      metrics.recordRateLimitedSend();
-      sendError(state.ws, 'rate_limited', 'Too many messages');
-      return;
-    }
+  for (const socket of sockets) {
+    const recipient = presenceStore.getClientState(socket);
+    if (recipient && recipient.user.userId !== excludedUserId) recipients.add(socket);
+  }
+  return recipients;
+}
 
-    const roomIndexStartedAt = performance.now();
-    const roomIndexed = await ensureRoomIndexed(state, frame.chat_id);
-    metrics.recordSendRoomIndex(performance.now() - roomIndexStartedAt);
-    if (!roomIndexed) {
-      sendError(state.ws, 'forbidden', 'Not a member of this chat', frame.request_id);
-      return;
-    }
-    metrics.recordSendPreBuffer(performance.now() - receivedAt);
+function broadcastRoomEventToLocalClients(context: RealtimeServerContext, raw: string): void {
+  const event = parseRoomEvent(raw);
+  if (!event || event.type !== 'message.created') return;
 
-    const createBufferStartedAt = performance.now();
-    try {
-      const message = await createBufferedMessage(prisma, {
-        senderId: state.user.userId,
-        chatId: frame.chat_id,
-        body: frame.body,
-        requestId: frame.request_id,
-      }, {
-        messageWritePublisher,
-        originConnectionId: state.connectionId,
-        membershipVerified: true,
-        publishAttempts: 1,
-        publishRetryDelayMs: 0,
-        stageTimings: {
-          recordPrepareMs: metrics.recordCreateBufferPrepare,
-        },
-      });
-      metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
-      sendJson(state.ws, {
-        type: 'ack',
-        request_id: frame.request_id,
-        message_id: message.id,
-        accepted_at: message.created_at,
-      });
-      metrics.recordAckSent(performance.now() - receivedAt);
-    } catch (err) {
-      metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
-      if (err instanceof AppError) {
-        sendError(state.ws, mapAppErrorToWsReason(err), err.message, frame.request_id);
-        return;
-      }
-      console.error('ws send failed:', err);
-      sendError(state.ws, 'validation_failed', 'message could not be sent', frame.request_id);
-    }
-  };
+  const sockets = context.presenceStore.getRoomSockets(event.room_id);
+  if (!sockets) return;
 
-  const handleTyping = async (state: ClientState, frame: RawFrame): Promise<void> => {
-    if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
-      sendError(state.ws, 'validation_failed', 'chat_id is required');
-      return;
-    }
-    if (typeof frame.is_typing !== 'boolean') {
-      sendError(state.ws, 'validation_failed', 'is_typing is required');
-      return;
-    }
+  for (const socket of sockets) {
+    const recipient = context.presenceStore.getClientState(socket);
+    if (!recipient) continue;
+    if (recipient.user.userId === event.message.sender_id) continue;
+    if (recipient.connectionId === event.origin_connection_id) continue;
+    sendJson(context, socket, { type: 'msg', message: event.message });
+  }
+}
 
-    const rateLimit = await rateLimiter.check(state.user.userId, {
-      keyPrefix: 'ws:typing',
-      limit: Number(process.env.WS_TYPING_RATE_LIMIT_PER_SEC || 10),
-      windowSeconds: 1,
-    });
-    if (!rateLimit.allowed) {
-      metrics.recordRateLimitedTyping();
-      sendError(state.ws, 'rate_limited', 'Too many typing events');
-      return;
-    }
+async function broadcastPresenceEventToLocalClients(
+  context: RealtimeServerContext,
+  raw: string,
+): Promise<void> {
+  const event = parsePresenceEvent(raw);
+  if (!event) return;
 
-    if (!await ensureRoomIndexed(state, frame.chat_id)) {
-      sendError(state.ws, 'forbidden', 'Not a member of this chat');
-      return;
-    }
-
-    presenceStore.broadcastToRoom(frame.chat_id, {
-      type: 'typing',
-      chat_id: frame.chat_id,
-      user_id: state.user.userId,
-      is_typing: frame.is_typing,
-    });
-  };
-
-  wss.on('connection', (ws: WebSocket, req) => {
-    const { query } = parse(req.url ?? '', true);
-    const token = Array.isArray(query.token) ? query.token[0] : query.token;
-
-    if (!token) {
-      ws.close(1008, 'auth_expired');
-      return;
-    }
-
-    let user: JwtPayload;
-    try {
-      user = verifyToken(token);
-    } catch {
-      ws.close(1008, 'auth_expired');
-      return;
-    }
-
-    const state: ClientState = { ws, user, roomIds: new Set(), connectionId: createConnectionId() };
-    const wasOnline = presenceStore.hasOpenSocketForUser(user.userId);
-    presenceStore.addClient(state);
-    metrics.recordWsConnected();
-    const presenceRefresh = setInterval(() => {
-      void refreshPresence(redisDeps.redis, state.connectionId);
-    }, 10_000);
-    presenceRefresh.unref();
-
-    ws.on('message', (data) => {
-      let frame: RawFrame;
-      try {
-        frame = JSON.parse(data.toString()) as RawFrame;
-      } catch {
-        return;
-      }
-
-      if (frame.type === 'ping') {
-        void refreshPresence(redisDeps.redis, state.connectionId);
-        sendJson(ws, { type: 'pong' });
-        return;
-      }
-
-      if (frame.type === 'send') {
-        void handleSend(state, frame);
-        return;
-      }
-
-      if (frame.type === 'typing') {
-        void handleTyping(state, frame);
-        return;
-      }
-
-      sendError(ws, 'unknown_op', 'Unknown frame type');
-    });
-
-    ws.on('close', () => {
-      clearInterval(presenceRefresh);
-      metrics.recordWsDisconnected();
-      const closedState = presenceStore.removeClient(ws);
-      if (!closedState) return;
-
-      if (redisDeps.redis) {
-        void unregisterPresence(redisDeps.redis, user.userId, closedState.connectionId);
-        return;
-      }
-
-      if (!presenceStore.hasOpenSocketForUser(user.userId)) {
-        broadcastPresence(closedState, false);
-      }
-    });
-
-    if (!preloadRoomsOnConnect) {
-      void (async () => {
-        if (ws.readyState !== WebSocket.OPEN || presenceStore.getClientState(ws) !== state) return;
-        if (redisDeps.redis) {
-          await registerPresence(redisDeps.redis, user.userId, state.connectionId);
-        } else if (!wasOnline) {
-          broadcastPresence(state, true);
-        }
-      })().catch((err) => {
-        console.error('ws connection setup failed:', err);
-        ws.close(1011, 'internal_error');
-      });
-      return;
-    }
-
-    void (async () => {
-      const memberships = await prisma.roomMember.findMany({
-        where: { userId: user.userId },
-        select: { roomId: true },
-      });
-      if (ws.readyState !== WebSocket.OPEN || presenceStore.getClientState(ws) !== state) return;
-      for (const membership of memberships) presenceStore.addSocketToRoom(state, membership.roomId);
-
-      const onlineUserIds = redisDeps.redis
-        ? await findOnlineRoomMembers(prisma, redisDeps.redis, [...state.roomIds], user.userId)
-        : findLocalOnlineRoomMembers(presenceStore, state, user.userId);
-      for (const onlineUserId of onlineUserIds) {
-        sendJson(ws, { type: 'presence', user_id: onlineUserId, online: true });
-      }
-
-      // console.log('ws connected:', user.userId);
-      if (redisDeps.redis) {
-        await registerPresence(redisDeps.redis, user.userId, state.connectionId);
-      } else if (!wasOnline) {
-        broadcastPresence(state, true);
-      }
-    })().catch((err) => {
-      console.error('ws connection setup failed:', err);
-      ws.close(1011, 'internal_error');
-    });
+  const memberships = await context.prisma.roomMember.findMany({
+    where: { userId: event.user_id },
+    select: { roomId: true },
   });
 
-  wss.on('close', () => {
-    metrics.close();
-  });
+  const recipients = new Set<WebSocket>();
+  for (const membership of memberships) {
+    collectRoomRecipients(context.presenceStore, membership.roomId, event.user_id)
+      .forEach((socket) => recipients.add(socket));
+  }
 
-  return wss;
+  for (const socket of recipients) {
+    sendJson(context, socket, { type: 'presence', user_id: event.user_id, online: event.online });
+  }
+}
+
+async function ensureRoomIndexed(
+  context: RealtimeServerContext,
+  state: ClientState,
+  roomId: string,
+): Promise<boolean> {
+  if (state.roomIds.has(roomId)) return true;
+
+  const membership = await context.prisma.roomMember.findUnique({
+    where: { userId_roomId: { userId: state.user.userId, roomId } },
+  });
+  if (!membership) return false;
+
+  context.presenceStore.addSocketToRoom(state, roomId);
+  return true;
+}
+
+function handleConnection(context: RealtimeServerContext, ws: WebSocket, req: IncomingMessage): void {
+  const user = authenticateConnection(ws, req);
+  if (!user) return;
+
+  const state: ClientState = { ws, user, roomIds: new Set(), connectionId: createConnectionId() };
+  const wasOnline = context.presenceStore.hasOpenSocketForUser(user.userId);
+  context.presenceStore.addClient(state);
+  context.metrics.recordWsConnected();
+
+  const presenceRefresh = startPresenceRefresh(context, state);
+  ws.on('message', (data) => handleClientMessage(context, state, data));
+  ws.on('close', () => handleClientClose(context, ws, user, presenceRefresh));
+
+  void setupConnectionPresence(context, state, wasOnline).catch((err) => {
+    console.error('ws connection setup failed:', err);
+    ws.close(1011, 'internal_error');
+  });
+}
+
+function authenticateConnection(ws: WebSocket, req: IncomingMessage): JwtPayload | undefined {
+  const { query } = parse(req.url ?? '', true);
+  const token = Array.isArray(query.token) ? query.token[0] : query.token;
+  if (!token) {
+    ws.close(1008, 'auth_expired');
+    return undefined;
+  }
+
+  try {
+    return verifyToken(token);
+  } catch {
+    ws.close(1008, 'auth_expired');
+    return undefined;
+  }
+}
+
+function startPresenceRefresh(context: RealtimeServerContext, state: ClientState): NodeJS.Timeout {
+  const presenceRefresh = setInterval(() => {
+    void refreshPresence(context.redisDeps.redis, state.connectionId);
+  }, 10_000);
+  presenceRefresh.unref();
+  return presenceRefresh;
+}
+
+function handleClientMessage(
+  context: RealtimeServerContext,
+  state: ClientState,
+  data: RawData,
+): void {
+  const frame = parseClientFrame(data);
+  if (!frame) return;
+
+  if (frame.type === 'ping') {
+    void refreshPresence(context.redisDeps.redis, state.connectionId);
+    sendJson(context, state.ws, { type: 'pong' });
+    return;
+  }
+
+  if (frame.type === 'send') {
+    void handleSend(context, state, frame);
+    return;
+  }
+
+  if (frame.type === 'typing') {
+    void handleTyping(context, state, frame);
+    return;
+  }
+
+  sendError(context, state.ws, 'unknown_op', 'Unknown frame type');
+}
+
+function parseClientFrame(data: unknown): RawFrame | undefined {
+  try {
+    return JSON.parse(String(data)) as RawFrame;
+  } catch {
+    return undefined;
+  }
+}
+
+function handleClientClose(
+  context: RealtimeServerContext,
+  ws: WebSocket,
+  user: JwtPayload,
+  presenceRefresh: NodeJS.Timeout,
+): void {
+  clearInterval(presenceRefresh);
+  context.metrics.recordWsDisconnected();
+
+  const closedState = context.presenceStore.removeClient(ws);
+  if (!closedState) return;
+
+  if (context.redisDeps.redis) {
+    void unregisterPresence(context.redisDeps.redis, user.userId, closedState.connectionId);
+    return;
+  }
+
+  if (!context.presenceStore.hasOpenSocketForUser(user.userId)) {
+    broadcastPresence(context, closedState, false);
+  }
+}
+
+async function setupConnectionPresence(
+  context: RealtimeServerContext,
+  state: ClientState,
+  wasOnline: boolean,
+): Promise<void> {
+  if (!context.preloadRoomsOnConnect) {
+    await registerOrBroadcastPresence(context, state, wasOnline);
+    return;
+  }
+
+  const memberships = await context.prisma.roomMember.findMany({
+    where: { userId: state.user.userId },
+    select: { roomId: true },
+  });
+  if (!isCurrentOpenSocket(context, state)) return;
+
+  memberships.forEach((membership) => context.presenceStore.addSocketToRoom(state, membership.roomId));
+  await sendOnlinePresenceSnapshot(context, state);
+  await registerOrBroadcastPresence(context, state, wasOnline);
+}
+
+function isCurrentOpenSocket(context: RealtimeServerContext, state: ClientState): boolean {
+  return state.ws.readyState === WebSocket.OPEN && context.presenceStore.getClientState(state.ws) === state;
+}
+
+async function sendOnlinePresenceSnapshot(context: RealtimeServerContext, state: ClientState): Promise<void> {
+  const onlineUserIds = context.redisDeps.redis
+    ? await findOnlineRoomMembers(context.prisma, context.redisDeps.redis, [...state.roomIds], state.user.userId)
+    : findLocalOnlineRoomMembers(context.presenceStore, state, state.user.userId);
+
+  for (const onlineUserId of onlineUserIds) {
+    sendJson(context, state.ws, { type: 'presence', user_id: onlineUserId, online: true });
+  }
+}
+
+async function registerOrBroadcastPresence(
+  context: RealtimeServerContext,
+  state: ClientState,
+  wasOnline: boolean,
+): Promise<void> {
+  if (!isCurrentOpenSocket(context, state)) return;
+
+  if (context.redisDeps.redis) {
+    await registerPresence(context.redisDeps.redis, state.user.userId, state.connectionId);
+  } else if (!wasOnline) {
+    broadcastPresence(context, state, true);
+  }
+}
+
+async function handleSend(
+  context: RealtimeServerContext,
+  state: ClientState,
+  frame: RawFrame,
+): Promise<void> {
+  const receivedAt = performance.now();
+  context.metrics.recordSendFrameReceived();
+
+  const sendFrame = validateSendFrame(context, state.ws, frame);
+  if (!sendFrame) return;
+
+  context.metrics.recordSendValidation(performance.now() - receivedAt);
+  if (!await allowSendFrame(context, state, receivedAt, sendFrame)) return;
+
+  await bufferAndAckMessage(context, state, sendFrame, receivedAt);
+}
+
+function validateSendFrame(
+  context: RealtimeServerContext,
+  ws: WebSocket,
+  frame: RawFrame,
+): SendFrame | undefined {
+  if (typeof frame.request_id !== 'string' || !frame.request_id) {
+    sendError(context, ws, 'validation_failed', 'request_id is required');
+    return undefined;
+  }
+  if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
+    sendError(context, ws, 'validation_failed', 'chat_id is required');
+    return undefined;
+  }
+  if (typeof frame.body !== 'string' || !frame.body.trim()) {
+    sendError(context, ws, 'validation_failed', 'body is required');
+    return undefined;
+  }
+  return frame as SendFrame;
+}
+
+async function allowSendFrame(
+  context: RealtimeServerContext,
+  state: ClientState,
+  receivedAt: number,
+  frame: SendFrame,
+): Promise<boolean> {
+  const rateLimitStartedAt = performance.now();
+  const rateLimit = await context.rateLimiter.check(state.user.userId, {
+    keyPrefix: 'ws:send',
+    limit: Number(process.env.WS_SEND_RATE_LIMIT_PER_SEC || 20),
+    windowSeconds: 1,
+  });
+  context.metrics.recordSendRateLimit(performance.now() - rateLimitStartedAt);
+  if (!rateLimit.allowed) {
+    context.metrics.recordRateLimitedSend();
+    sendError(context, state.ws, 'rate_limited', 'Too many messages');
+    return false;
+  }
+
+  const roomIndexStartedAt = performance.now();
+  const roomIndexed = await ensureRoomIndexed(context, state, frame.chat_id);
+  context.metrics.recordSendRoomIndex(performance.now() - roomIndexStartedAt);
+  if (!roomIndexed) {
+    sendError(context, state.ws, 'forbidden', 'Not a member of this chat', frame.request_id);
+    return false;
+  }
+
+  context.metrics.recordSendPreBuffer(performance.now() - receivedAt);
+  return true;
+}
+
+async function bufferAndAckMessage(
+  context: RealtimeServerContext,
+  state: ClientState,
+  frame: SendFrame,
+  receivedAt: number,
+): Promise<void> {
+  const createBufferStartedAt = performance.now();
+
+  try {
+    const message = await createBufferedMessage(context.prisma, {
+      senderId: state.user.userId,
+      chatId: frame.chat_id,
+      body: frame.body,
+      requestId: frame.request_id,
+    }, {
+      messageWritePublisher: context.messageWritePublisher,
+      originConnectionId: state.connectionId,
+      membershipVerified: true,
+      publishAttempts: 1,
+      publishRetryDelayMs: 0,
+      stageTimings: {
+        recordPrepareMs: context.metrics.recordCreateBufferPrepare,
+      },
+    });
+    context.metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
+    sendJson(context, state.ws, {
+      type: 'ack',
+      request_id: frame.request_id,
+      message_id: message.id,
+      accepted_at: message.created_at,
+    });
+    context.metrics.recordAckSent(performance.now() - receivedAt);
+  } catch (err) {
+    context.metrics.recordCreateBufferTotal(performance.now() - createBufferStartedAt);
+    handleSendFailure(context, state.ws, frame.request_id, err);
+  }
+}
+
+function handleSendFailure(
+  context: RealtimeServerContext,
+  ws: WebSocket,
+  requestId: string,
+  err: unknown,
+): void {
+  if (err instanceof AppError) {
+    sendError(context, ws, mapAppErrorToWsReason(err), err.message, requestId);
+    return;
+  }
+
+  console.error('ws send failed:', err);
+  sendError(context, ws, 'validation_failed', 'message could not be sent', requestId);
+}
+
+async function handleTyping(
+  context: RealtimeServerContext,
+  state: ClientState,
+  frame: RawFrame,
+): Promise<void> {
+  const typingFrame = validateTypingFrame(context, state.ws, frame);
+  if (!typingFrame) return;
+
+  const rateLimit = await context.rateLimiter.check(state.user.userId, {
+    keyPrefix: 'ws:typing',
+    limit: Number(process.env.WS_TYPING_RATE_LIMIT_PER_SEC || 10),
+    windowSeconds: 1,
+  });
+  if (!rateLimit.allowed) {
+    context.metrics.recordRateLimitedTyping();
+    sendError(context, state.ws, 'rate_limited', 'Too many typing events');
+    return;
+  }
+
+  if (!await ensureRoomIndexed(context, state, typingFrame.chat_id)) {
+    sendError(context, state.ws, 'forbidden', 'Not a member of this chat');
+    return;
+  }
+
+  context.presenceStore.broadcastToRoom(typingFrame.chat_id, {
+    type: 'typing',
+    chat_id: typingFrame.chat_id,
+    user_id: state.user.userId,
+    is_typing: typingFrame.is_typing,
+  });
+}
+
+function validateTypingFrame(
+  context: RealtimeServerContext,
+  ws: WebSocket,
+  frame: RawFrame,
+): TypingFrame | undefined {
+  if (typeof frame.chat_id !== 'string' || !frame.chat_id) {
+    sendError(context, ws, 'validation_failed', 'chat_id is required');
+    return undefined;
+  }
+  if (typeof frame.is_typing !== 'boolean') {
+    sendError(context, ws, 'validation_failed', 'is_typing is required');
+    return undefined;
+  }
+  return frame as TypingFrame;
 }
 
 function findLocalOnlineRoomMembers(

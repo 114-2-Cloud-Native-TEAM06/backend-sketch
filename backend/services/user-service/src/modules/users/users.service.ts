@@ -15,12 +15,6 @@ function toUserDto(row: {
   };
 }
 
-export async function getMe(prisma: PrismaClient, userId: string): Promise<User> {
-  const user = await findUserById(prisma, userId);
-  if (!user) throw new AppError(404, 'NOT_FOUND', 'User not found');
-  return toUserDto(user);
-}
-
 export async function updateMe(
   prisma: PrismaClient,
   userId: string,

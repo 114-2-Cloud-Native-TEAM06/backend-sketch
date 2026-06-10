@@ -1,7 +1,6 @@
 import http from 'k6/http';
 import ws from 'k6/ws';
-import { sleep } from 'k6';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import { SharedArray } from 'k6/data';

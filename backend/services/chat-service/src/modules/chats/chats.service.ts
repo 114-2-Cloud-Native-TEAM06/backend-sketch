@@ -139,85 +139,140 @@ export async function createChat(
   userId: string,
   body: CreateChatRequest,
 ): Promise<{ status: number; body: Chat }> {
-  const { type, name, member_ids } = body;
+  const { type, name, memberIds } = validateCreateChatRequest(body);
 
-  if (!type || !member_ids || !Array.isArray(member_ids))
-    throw new AppError(400, 'VALIDATION_FAILED', 'type and member_ids are required');
-
-  if (type === 'direct') {
-    if (member_ids.length !== 1)
-      throw new AppError(400, 'VALIDATION_FAILED', 'direct chat requires exactly 1 member_id');
-
-    const rawTarget = member_ids[0];
-    const targetUser = await findUserForChatMember(prisma, rawTarget);
-    if (!targetUser)
-      throw new AppError(422, 'VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`);
-
-    if (targetUser.id === userId)
-      throw new AppError(400, 'VALIDATION_FAILED', 'cannot create a direct chat with yourself');
-
-    const candidates = await findDirectRoomCandidates(prisma, { userId, targetUserId: targetUser.id });
-    const existing = candidates.find((room) => room.members.length === 2);
-
-    if (existing) {
-      const lastMsg = existing.messages[0];
-      return {
-        status: 200,
-        body: {
-          id:           existing.id,
-          type:         'direct',
-          name:         targetUser.displayName,
-          member_ids:   existing.members.map((m) => m.userId),
-          last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
-          unread_count: 0,
-          created_at:   existing.createdAt.toISOString(),
-        },
-      };
-    }
-
-    const room = await createDirectRoom(prisma, { userId, targetUserId: targetUser.id });
-    return {
-      status: 201,
-      body: {
-        id:           room.id,
-        type:         'direct',
-        name:         targetUser.displayName,
-        member_ids:   [userId, targetUser.id],
-        unread_count: 0,
-        created_at:   room.createdAt.toISOString(),
-      },
-    };
-  }
-
-  if (type === 'group') {
-    if (!name)
-      throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires a name');
-    if (!member_ids.length)
-      throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires at least 1 member_id');
-
-    const resolvedMembers = await Promise.all(member_ids.map((id) => findUserForChatMember(prisma, id)));
-    const badIdx = resolvedMembers.findIndex((user) => user === null);
-    if (badIdx !== -1)
-      throw new AppError(422, 'VALIDATION_FAILED', `member_ids[${badIdx}]: user "${member_ids[badIdx]}" not found`);
-
-    const resolvedIds = resolvedMembers.map((user) => user!.id);
-    const allIds = [...new Set([userId, ...resolvedIds])];
-    const room = await createGroupRoom(prisma, { name, memberIds: allIds });
-
-    return {
-      status: 201,
-      body: {
-        id:           room.id,
-        type:         'group',
-        name:         room.name ?? name,
-        member_ids:   allIds,
-        unread_count: 0,
-        created_at:   room.createdAt.toISOString(),
-      },
-    };
-  }
+  if (type === 'direct') return createDirectChat(prisma, userId, memberIds);
+  if (type === 'group') return createGroupChat(prisma, userId, { name, memberIds });
 
   throw new AppError(400, 'VALIDATION_FAILED', 'type must be "direct" or "group"');
+}
+
+function validateCreateChatRequest(body: CreateChatRequest): {
+  type: CreateChatRequest['type'];
+  name: string | undefined;
+  memberIds: string[];
+} {
+  const { type, name, member_ids } = body;
+  if (!type || !Array.isArray(member_ids))
+    throw new AppError(400, 'VALIDATION_FAILED', 'type and member_ids are required');
+
+  return { type, name, memberIds: member_ids };
+}
+
+async function createDirectChat(
+  prisma: PrismaClient,
+  userId: string,
+  memberIds: string[],
+): Promise<{ status: number; body: Chat }> {
+  const targetUser = await resolveDirectTarget(prisma, userId, memberIds);
+  const existing = await findExistingDirectRoom(prisma, userId, targetUser.id);
+
+  if (existing) return toExistingDirectChatResponse(existing, targetUser.displayName);
+
+  const room = await createDirectRoom(prisma, { userId, targetUserId: targetUser.id });
+  return {
+    status: 201,
+    body: {
+      id:           room.id,
+      type:         'direct',
+      name:         targetUser.displayName,
+      member_ids:   [userId, targetUser.id],
+      unread_count: 0,
+      created_at:   room.createdAt.toISOString(),
+    },
+  };
+}
+
+async function resolveDirectTarget(
+  prisma: PrismaClient,
+  userId: string,
+  memberIds: string[],
+): Promise<NonNullable<Awaited<ReturnType<typeof findUserForChatMember>>>> {
+  if (memberIds.length !== 1)
+    throw new AppError(400, 'VALIDATION_FAILED', 'direct chat requires exactly 1 member_id');
+
+  const rawTarget = memberIds[0];
+  const targetUser = await findUserForChatMember(prisma, rawTarget);
+  if (!targetUser)
+    throw new AppError(422, 'VALIDATION_FAILED', `member_ids[0]: user "${rawTarget}" not found`);
+
+  if (targetUser.id === userId)
+    throw new AppError(400, 'VALIDATION_FAILED', 'cannot create a direct chat with yourself');
+
+  return targetUser;
+}
+
+async function findExistingDirectRoom(
+  prisma: PrismaClient,
+  userId: string,
+  targetUserId: string,
+): Promise<Awaited<ReturnType<typeof findDirectRoomCandidates>>[number] | undefined> {
+  const candidates = await findDirectRoomCandidates(prisma, { userId, targetUserId });
+  return candidates.find((room) => room.members.length === 2);
+}
+
+function toExistingDirectChatResponse(
+  room: Awaited<ReturnType<typeof findDirectRoomCandidates>>[number],
+  name: string,
+): { status: number; body: Chat } {
+  const lastMsg = room.messages[0];
+  return {
+    status: 200,
+    body: {
+      id:           room.id,
+      type:         'direct',
+      name,
+      member_ids:   room.members.map((m) => m.userId),
+      last_message: lastMsg ? toMessageDto(lastMsg) : undefined,
+      unread_count: 0,
+      created_at:   room.createdAt.toISOString(),
+    },
+  };
+}
+
+async function createGroupChat(
+  prisma: PrismaClient,
+  userId: string,
+  input: { name?: string; memberIds: string[] },
+): Promise<{ status: number; body: Chat }> {
+  const name = requireGroupName(input.name);
+  requireGroupMembers(input.memberIds);
+
+  const resolvedIds = await resolveGroupMemberIds(prisma, input.memberIds);
+  const allIds = [...new Set([userId, ...resolvedIds])];
+  const room = await createGroupRoom(prisma, { name, memberIds: allIds });
+
+  return {
+    status: 201,
+    body: {
+      id:           room.id,
+      type:         'group',
+      name:         room.name ?? name,
+      member_ids:   allIds,
+      unread_count: 0,
+      created_at:   room.createdAt.toISOString(),
+    },
+  };
+}
+
+function requireGroupName(name: string | undefined): string {
+  if (!name) throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires a name');
+  return name;
+}
+
+function requireGroupMembers(memberIds: string[]): void {
+  if (!memberIds.length)
+    throw new AppError(400, 'VALIDATION_FAILED', 'group chat requires at least 1 member_id');
+}
+
+async function resolveGroupMemberIds(prisma: PrismaClient, memberIds: string[]): Promise<string[]> {
+  const resolvedMembers = await Promise.all(memberIds.map((id) => findUserForChatMember(prisma, id)));
+  const badIdx = resolvedMembers.findIndex((user) => user === null);
+
+  if (badIdx !== -1)
+    throw new AppError(422, 'VALIDATION_FAILED', `member_ids[${badIdx}]: user "${memberIds[badIdx]}" not found`);
+
+  return resolvedMembers.map((user) => user!.id);
 }
 
 export async function getChat(prisma: PrismaClient, userId: string, chatId: string): Promise<Chat> {
