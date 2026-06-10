@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from 'vitest';
 import { startWebSocketServer } from '../../services/realtime-service/src/modules/realtime/realtime.server.js';
 import { disconnectDatabase, prisma, resetDatabase } from '../helpers/db.js';
 import { FakeRedis, roomEventChannel } from '../../packages/shared-redis/src/index.js';
-import { InMemoryMessageWriteBuffer } from '../../packages/shared-nats/src/index.js';
+import { InMemoryMessageWriteBuffer, type MessageWritePublisher } from '../../packages/shared-nats/src/index.js';
 import {
   connectWs,
   expectNoMessage,
@@ -45,8 +45,8 @@ async function startServerWithRedis(redis: FakeRedis): Promise<number> {
   return (server.address() as AddressInfo).port;
 }
 
-async function startServerWithBuffer(buffer: InMemoryMessageWriteBuffer): Promise<number> {
-  const server = startWebSocketServer(0, prisma, { messageWritePublisher: buffer });
+async function startServerWithBuffer(messageWritePublisher: MessageWritePublisher): Promise<number> {
+  const server = startWebSocketServer(0, prisma, { messageWritePublisher });
   activeServers.push(server);
   await once(server, 'listening');
   return (server.address() as AddressInfo).port;
@@ -192,8 +192,6 @@ test('send publishes a buffered write command and returns ack without writing Po
   if (ack.type !== 'ack') throw new Error('expected ack');
 
   const messageCount = await prisma.message.count({ where: { id: ack.message_id } });
-  const writeCount = await prisma.messageWrite.count({ where: { id: ack.message_id } });
-  expect(writeCount).toBe(0);
   expect(messageCount).toBe(0);
   expect(buffer.commands).toEqual([
     expect.objectContaining({
@@ -227,7 +225,6 @@ test('send returns buffer_unavailable when no message write publisher is configu
     request_id: 'req-no-buffer',
   });
   expect(await prisma.message.count()).toBe(0);
-  expect(await prisma.messageWrite.count()).toBe(0);
 });
 
 test('send is idempotent for duplicate request_id from the same sender', async () => {
@@ -252,8 +249,7 @@ test('send is idempotent for duplicate request_id from the same sender', async (
   // Assert
   if (firstAck.type !== 'ack' || secondAck.type !== 'ack') throw new Error('expected ack frames');
   expect(secondAck.message_id).toBe(firstAck.message_id);
-  const writes = await prisma.messageWrite.findMany({ where: { senderId: alice.id, requestId: 'req-duplicate' } });
-  expect(writes).toHaveLength(0);
+  expect(await prisma.message.count({ where: { senderId: alice.id, requestId: 'req-duplicate' } })).toBe(0);
   expect(buffer.commands).toHaveLength(2);
   expect(buffer.commands.map((command) => command.message_id)).toEqual([firstAck.message_id, firstAck.message_id]);
 });
@@ -336,6 +332,7 @@ function restoreRateLimitEnv(): void {
   } else {
     process.env.WS_SEND_RATE_LIMIT_PER_SEC = originalSendRateLimit;
   }
+
 }
 
 test('send from a non-member returns forbidden and does not persist a message', async () => {
@@ -376,10 +373,8 @@ test('send returns a request-scoped error when buffer enqueue fails', async () =
     reason: 'buffer_unavailable',
     request_id: 'req-buffer-fail',
   });
-  const writeCount = await prisma.messageWrite.count({
-    where: { senderId: alice.id, requestId: 'req-buffer-fail' },
-  });
-  expect(writeCount).toBe(0);
+  expect(failingBuffer.commands).toHaveLength(1);
+  expect(await prisma.message.count({ where: { senderId: alice.id, requestId: 'req-buffer-fail' } })).toBe(0);
 });
 
 test('typing is relayed to room members only', async () => {

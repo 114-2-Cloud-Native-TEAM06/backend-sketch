@@ -459,7 +459,7 @@ test('lists chats with the asynchronously persisted latest message', async () =>
   });
 });
 
-test('reads pending message writes together with persisted chat history', async () => {
+test('message history only returns persisted messages', async () => {
   // Arrange
   const alice = await prisma.user.create({
     data: {
@@ -484,16 +484,6 @@ test('reads pending message writes together with persisted chat history', async 
       },
     },
   });
-  await prisma.messageWrite.create({
-    data: {
-      id: 'pending-msg',
-      requestId: 'req-pending',
-      senderId: alice.id,
-      roomId: room.id,
-      content: 'pending',
-      acceptedAt: new Date('2026-05-30T10:01:00.000Z'),
-    },
-  });
 
   // Act
   const res = await requestJson<Array<{ id: string; body: string; delivery_status?: string }>>(
@@ -505,12 +495,11 @@ test('reads pending message writes together with persisted chat history', async 
   // Assert
   expect(res.status).toBe(200);
   expect(res.body).toEqual([
-    expect.objectContaining({ id: 'pending-msg', body: 'pending', delivery_status: 'sent' }),
     expect.objectContaining({ id: 'persisted-msg', body: 'persisted' }),
   ]);
 });
 
-test('lists chats using pending message writes for latest message ordering', async () => {
+test('lists chats using persisted message ordering only', async () => {
   // Arrange
   const alice = await prisma.user.create({
     data: {
@@ -536,21 +525,12 @@ test('lists chats using pending message writes for latest message ordering', asy
       },
     },
   });
-  const pendingRoom = await prisma.room.create({
+  const quietRoom = await prisma.room.create({
     data: {
       isGroup: true,
-      name: 'Pending',
+      name: 'Quiet',
       lastMessageAt: new Date('2026-05-30T08:00:00.000Z'),
       members: { create: [{ userId: alice.id }] },
-    },
-  });
-  await prisma.messageWrite.create({
-    data: {
-      requestId: 'req-latest-pending',
-      senderId: alice.id,
-      roomId: pendingRoom.id,
-      content: 'latest pending',
-      acceptedAt: new Date('2026-05-30T10:00:00.000Z'),
     },
   });
 
@@ -563,7 +543,7 @@ test('lists chats using pending message writes for latest message ordering', asy
 
   // Assert
   expect(res.status).toBe(200);
-  expect(res.body.map((chat) => chat.id)).toEqual([pendingRoom.id, olderRoom.id]);
-  expect(res.body[0].last_message?.body).toBe('latest pending');
+  expect(res.body.map((chat) => chat.id)).toEqual([olderRoom.id, quietRoom.id]);
+  expect(res.body[0].last_message?.body).toBe('old persisted');
+  expect(res.body[1].last_message).toBeUndefined();
 });
-

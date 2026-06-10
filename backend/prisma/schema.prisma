@@ -18,7 +18,6 @@ model User {
 
   memberships   RoomMember[]
   messages      Message[]
-  messageWrites MessageWrite[]
 }
 
 model Room {
@@ -31,7 +30,6 @@ model Room {
 
   members       RoomMember[]
   messages      Message[]
-  messageWrites MessageWrite[]
 
   @@index([lastMessageAt])
 }
@@ -53,6 +51,11 @@ model Message {
   createdAt    DateTime @default(now())
   requestId    String?
   roomSequence BigInt
+  status       MessageStatus @default(PERSISTED)
+  persistedAt  DateTime @default(now())
+  fanoutedAt   DateTime?
+  failedAt     DateTime?
+  failureReason String?
 
   senderId String
   roomId   String
@@ -67,11 +70,10 @@ model Message {
   @@unique([senderId, requestId])
 }
 
-enum MessageWriteStatus {
-  PENDING
+enum MessageStatus {
   PERSISTED
   FANOUTED
-  DEAD
+  FANOUT_FAILED
 }
 
 enum MessageOutboxStatus {
@@ -79,25 +81,6 @@ enum MessageOutboxStatus {
   PUBLISHING
   PUBLISHED
   FAILED
-}
-
-model MessageWrite {
-  id            String             @id @default(uuid())
-  requestId     String
-  senderId      String
-  roomId        String
-  content       String
-  status        MessageWriteStatus @default(PENDING)
-  acceptedAt    DateTime           @default(now())
-  persistedAt   DateTime?
-  failedAt      DateTime?
-  failureReason String?
-
-  sender User @relation(fields: [senderId], references: [id])
-  room   Room @relation(fields: [roomId], references: [id])
-
-  @@unique([senderId, requestId])
-  @@index([roomId, acceptedAt])
 }
 
 model MessageOutbox {

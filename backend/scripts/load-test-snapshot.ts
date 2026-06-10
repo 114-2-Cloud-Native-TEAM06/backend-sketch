@@ -1,16 +1,18 @@
 import { createPrismaClient } from '../packages/shared-db/src/prisma.js';
 import {
   connectNats,
-  MESSAGE_WRITE_CONSUMER,
-  MESSAGE_WRITE_STREAM,
+  messageWriteShardForIndex,
+  messageWriteShardCount,
+  messageWriteShards,
+  natsShardUrls,
 } from '../packages/shared-nats/src/index.js';
 
 async function main(): Promise<void> {
   const prisma = createPrismaClient();
   try {
-    const [messageCount, messageWriteStatusCounts, natsSnapshot, pgActivity] = await Promise.all([
+    const [messageCount, messageStatusCounts, natsSnapshot, pgActivity] = await Promise.all([
       prisma.message.count(),
-      prisma.messageWrite.groupBy({
+      prisma.message.groupBy({
         by: ['status'],
         _count: { _all: true },
       }),
@@ -23,8 +25,8 @@ async function main(): Promise<void> {
       ts: new Date().toISOString(),
       db: {
         messages: messageCount,
-        message_writes: Object.fromEntries(
-          messageWriteStatusCounts.map((row) => [row.status.toLowerCase(), row._count._all]),
+        message_statuses: Object.fromEntries(
+          messageStatusCounts.map((row) => [row.status.toLowerCase(), row._count._all]),
         ),
       },
       nats: natsSnapshot,
@@ -36,24 +38,40 @@ async function main(): Promise<void> {
 }
 
 async function readNatsSnapshot(): Promise<Record<string, unknown>> {
+  const configuredShardUrls = process.env.NATS_SHARD_URLS ? natsShardUrls() : undefined;
+  if (configuredShardUrls) return readPhysicalNatsShardSnapshot(configuredShardUrls);
+
   let nats;
   try {
     nats = await connectNats();
     const jsm = await nats.jetstreamManager();
-    const [streamInfo, consumerInfo] = await Promise.all([
-      jsm.streams.info(MESSAGE_WRITE_STREAM),
-      jsm.consumers.info(MESSAGE_WRITE_STREAM, MESSAGE_WRITE_CONSUMER),
-    ]);
+    const shards = await Promise.all(messageWriteShards().map(async (shard) => {
+      const [streamInfo, consumerInfo] = await Promise.all([
+        jsm.streams.info(shard.stream),
+        jsm.consumers.info(shard.stream, shard.consumer),
+      ]);
+      return {
+        index: shard.index,
+        stream: shard.stream,
+        consumer: shard.consumer,
+        messages: streamInfo.state.messages,
+        bytes: streamInfo.state.bytes,
+        first_seq: streamInfo.state.first_seq,
+        last_seq: streamInfo.state.last_seq,
+        num_pending: consumerInfo.num_pending,
+        num_ack_pending: consumerInfo.num_ack_pending,
+        num_redelivered: consumerInfo.num_redelivered,
+      };
+    }));
     return {
-      stream: MESSAGE_WRITE_STREAM,
-      consumer: MESSAGE_WRITE_CONSUMER,
-      messages: streamInfo.state.messages,
-      bytes: streamInfo.state.bytes,
-      first_seq: streamInfo.state.first_seq,
-      last_seq: streamInfo.state.last_seq,
-      num_pending: consumerInfo.num_pending,
-      num_ack_pending: consumerInfo.num_ack_pending,
-      num_redelivered: consumerInfo.num_redelivered,
+      shards,
+      totals: {
+        messages: shards.reduce((sum, shard) => sum + shard.messages, 0),
+        bytes: shards.reduce((sum, shard) => sum + shard.bytes, 0),
+        num_pending: shards.reduce((sum, shard) => sum + shard.num_pending, 0),
+        num_ack_pending: shards.reduce((sum, shard) => sum + shard.num_ack_pending, 0),
+        num_redelivered: shards.reduce((sum, shard) => sum + shard.num_redelivered, 0),
+      },
     };
   } catch (err) {
     return {
@@ -61,6 +79,60 @@ async function readNatsSnapshot(): Promise<Record<string, unknown>> {
     };
   } finally {
     await nats?.drain();
+  }
+}
+
+async function readPhysicalNatsShardSnapshot(urls: string[]): Promise<Record<string, unknown>> {
+  const shardCount = messageWriteShardCount();
+  if (urls.length !== shardCount) {
+    return {
+      error: `NATS_SHARD_URLS count (${urls.length}) must match MESSAGE_WRITE_SHARD_COUNT (${shardCount})`,
+    };
+  }
+
+  const connections = [];
+  try {
+    const shards = [];
+    for (let index = 0; index < urls.length; index += 1) {
+      const nats = await connectNats(urls[index]);
+      connections.push(nats);
+      const jsm = await nats.jetstreamManager();
+      const shard = messageWriteShardForIndex(index, shardCount);
+      const [streamInfo, consumerInfo] = await Promise.all([
+        jsm.streams.info(shard.stream),
+        jsm.consumers.info(shard.stream, shard.consumer),
+      ]);
+      shards.push({
+        index: shard.index,
+        url: urls[index],
+        stream: shard.stream,
+        consumer: shard.consumer,
+        messages: streamInfo.state.messages,
+        bytes: streamInfo.state.bytes,
+        first_seq: streamInfo.state.first_seq,
+        last_seq: streamInfo.state.last_seq,
+        num_pending: consumerInfo.num_pending,
+        num_ack_pending: consumerInfo.num_ack_pending,
+        num_redelivered: consumerInfo.num_redelivered,
+      });
+    }
+
+    return {
+      shards,
+      totals: {
+        messages: shards.reduce((sum, shard) => sum + shard.messages, 0),
+        bytes: shards.reduce((sum, shard) => sum + shard.bytes, 0),
+        num_pending: shards.reduce((sum, shard) => sum + shard.num_pending, 0),
+        num_ack_pending: shards.reduce((sum, shard) => sum + shard.num_ack_pending, 0),
+        num_redelivered: shards.reduce((sum, shard) => sum + shard.num_redelivered, 0),
+      },
+    };
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    await Promise.all(connections.map((nats) => nats.drain()));
   }
 }
 

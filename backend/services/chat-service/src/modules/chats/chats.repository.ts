@@ -1,11 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
 
-type MessageWriteDelegate = PrismaClient['messageWrite'];
-
-function getMessageWriteDelegate(prisma: PrismaClient): MessageWriteDelegate | undefined {
-  return (prisma as unknown as { messageWrite?: MessageWriteDelegate }).messageWrite;
-}
-
 export function findMembershipsForUser(prisma: PrismaClient, userId: string) {
   return prisma.roomMember.findMany({
     where: { userId },
@@ -23,21 +17,6 @@ export function findMembershipsForUser(prisma: PrismaClient, userId: string) {
       },
     },
     orderBy: { room: { lastMessageAt: 'desc' } },
-  });
-}
-
-export function findPendingMessageWritesForRooms(prisma: PrismaClient, roomIds: string[]) {
-  if (!roomIds.length) return Promise.resolve([]);
-  const messageWrite = getMessageWriteDelegate(prisma);
-  if (!messageWrite) return Promise.resolve([]);
-
-  return messageWrite.findMany({
-    where: {
-      roomId: { in: roomIds },
-      status: 'PENDING',
-    },
-    orderBy: { acceptedAt: 'desc' },
-    select: { id: true, content: true, acceptedAt: true, senderId: true, roomId: true },
   });
 }
 
@@ -134,17 +113,6 @@ export function findMessageCursor(prisma: PrismaClient, messageId: string) {
   });
 }
 
-export async function findWriteCursor(prisma: PrismaClient, messageId: string) {
-  const messageWrite = getMessageWriteDelegate(prisma);
-  if (!messageWrite) return null;
-
-  const write = await messageWrite.findUnique({
-    where: { id: messageId },
-    select: { acceptedAt: true },
-  });
-  return write ? { createdAt: write.acceptedAt } : null;
-}
-
 export function findMessages(
   prisma: PrismaClient,
   input: { roomId: string; before?: Date; limit: number },
@@ -157,25 +125,6 @@ export function findMessages(
     orderBy: { createdAt: 'desc' },
     take: input.limit,
     select: { id: true, content: true, createdAt: true, senderId: true, roomId: true },
-  });
-}
-
-export function findPendingMessageWrites(
-  prisma: PrismaClient,
-  input: { roomId: string; before?: Date; limit: number },
-) {
-  const messageWrite = getMessageWriteDelegate(prisma);
-  if (!messageWrite) return Promise.resolve([]);
-
-  return messageWrite.findMany({
-    where: {
-      roomId: input.roomId,
-      status: 'PENDING',
-      ...(input.before ? { acceptedAt: { lt: input.before } } : {}),
-    },
-    orderBy: { acceptedAt: 'desc' },
-    take: input.limit,
-    select: { id: true, content: true, acceptedAt: true, senderId: true, roomId: true },
   });
 }
 
@@ -230,72 +179,4 @@ export function updateLastMessageAt(prisma: PrismaClient, input: { roomId: strin
     SET "lastMessageAt" = GREATEST("lastMessageAt", ${input.lastMessageAt})
     WHERE "id" = ${input.roomId}
   `;
-}
-
-export function createMessageWrite(
-  prisma: PrismaClient,
-  input: { senderId: string; roomId: string; content: string; requestId: string },
-) {
-  return prisma.messageWrite.create({
-    data: {
-      senderId: input.senderId,
-      roomId: input.roomId,
-      content: input.content,
-      requestId: input.requestId,
-    },
-    select: {
-      id: true,
-      requestId: true,
-      senderId: true,
-      roomId: true,
-      content: true,
-      status: true,
-      acceptedAt: true,
-      persistedAt: true,
-      failedAt: true,
-      failureReason: true,
-    },
-  });
-}
-
-export function findMessageWriteByRequestId(
-  prisma: PrismaClient,
-  input: { senderId: string; requestId: string },
-) {
-  return prisma.messageWrite.findUnique({
-    where: { senderId_requestId: input },
-    select: {
-      id: true,
-      requestId: true,
-      senderId: true,
-      roomId: true,
-      content: true,
-      status: true,
-      acceptedAt: true,
-      persistedAt: true,
-      failedAt: true,
-      failureReason: true,
-    },
-  });
-}
-
-export function updateMessageWriteStatus(
-  prisma: PrismaClient,
-  input: {
-    id: string;
-    status: 'PENDING' | 'PERSISTED' | 'FANOUTED' | 'DEAD';
-    persistedAt?: Date;
-    failedAt?: Date;
-    failureReason?: string;
-  },
-) {
-  return prisma.messageWrite.update({
-    where: { id: input.id },
-    data: {
-      status: input.status,
-      ...(input.persistedAt ? { persistedAt: input.persistedAt } : {}),
-      ...(input.failedAt ? { failedAt: input.failedAt } : {}),
-      ...(input.failureReason ? { failureReason: input.failureReason } : {}),
-    },
-  });
 }

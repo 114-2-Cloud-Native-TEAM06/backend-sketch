@@ -23,7 +23,6 @@ export async function resetDatabase(): Promise<void> {
   assertTestDatabase();
 
   await prisma.$executeRaw`DELETE FROM "MessageOutbox"`;
-  await prisma.messageWrite.deleteMany();
   await prisma.message.deleteMany();
   await prisma.roomMember.deleteMany();
   await prisma.room.deleteMany();

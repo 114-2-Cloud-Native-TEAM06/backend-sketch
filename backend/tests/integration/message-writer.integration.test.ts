@@ -38,7 +38,7 @@ afterAll(async () => {
   await resetDatabase();
   await disconnectDatabase();
 });
-test('message write worker creates the write record, persists the command, and enqueues fanout', async () => {
+test('message write worker persists the command and enqueues fanout', async () => {
   // Arrange
   const alice = await prisma.user.create({
     data: {
@@ -70,11 +70,10 @@ test('message write worker creates the write record, persists the command, and e
   // Assert
   expect(message).toMatchObject({ id: 'msg-worker', body: 'worker body' });
   const persisted = await prisma.message.findUniqueOrThrow({ where: { id: 'msg-worker' } });
-  const updatedWrite = await prisma.messageWrite.findUniqueOrThrow({ where: { id: 'msg-worker' } });
   const updatedRoom = await prisma.room.findUniqueOrThrow({ where: { id: room.id } });
   expect(persisted.content).toBe('worker body');
-  expect(updatedWrite.status).toBe('PERSISTED');
-  expect(updatedWrite.persistedAt?.toISOString()).toBe(acceptedAt.toISOString());
+  expect(persisted.status).toBe('PERSISTED');
+  expect(persisted.persistedAt.toISOString()).toBe(acceptedAt.toISOString());
   expect(updatedRoom.lastMessageAt.toISOString()).toBe(acceptedAt.toISOString());
   expect(persisted.roomSequence).toBe(1n);
   expect(await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::BIGINT AS count FROM "MessageOutbox"`).toEqual([
@@ -82,7 +81,7 @@ test('message write worker creates the write record, persists the command, and e
   ]);
 });
 
-test('message write worker marks the write dead after retry exhaustion', async () => {
+test('message write worker returns undefined after retry exhaustion without persisting a message', async () => {
   // Arrange
   const alice = await prisma.user.create({
     data: {
@@ -98,30 +97,19 @@ test('message write worker marks the write dead after retry exhaustion', async (
       members: { create: [{ userId: alice.id }] },
     },
   });
-  const write = await prisma.messageWrite.create({
-    data: {
-      requestId: 'req-dead',
-      senderId: alice.id,
-      roomId: room.id,
-      content: 'dead body',
-    },
-  });
-
   // Act
   const result = await processMessageWriteCommand(prisma, {
-    message_id: write.id,
-    request_id: write.requestId,
+    message_id: 'msg-dead',
+    request_id: 'req-dead',
     sender_id: alice.id,
     room_id: 'missing-room',
-    body: write.content,
-    accepted_at: write.acceptedAt.toISOString(),
+    body: 'dead body',
+    accepted_at: new Date('2026-05-30T11:00:00.000Z').toISOString(),
   }, { deliveryAttempt: 3, maxDeliveryAttempts: 3 });
 
   // Assert
-  const updatedWrite = await prisma.messageWrite.findUniqueOrThrow({ where: { id: write.id } });
   expect(result).toBeUndefined();
-  expect(updatedWrite.status).toBe('DEAD');
-  expect(updatedWrite.failureReason).toBeTruthy();
+  expect(await prisma.message.count()).toBe(0);
 });
 
 test('message write worker persists a batch of commands and drains outbox fanout', async () => {
@@ -166,12 +154,11 @@ test('message write worker persists a batch of commands and drains outbox fanout
   // Assert
   expect(messages.map((message) => message.id).sort()).toEqual(['msg-batch-1', 'msg-batch-2']);
   const persistedMessages = await prisma.message.findMany({ orderBy: { id: 'asc' } });
-  const updatedWrites = await prisma.messageWrite.findMany({ orderBy: { id: 'asc' } });
   const updatedRoom = await prisma.room.findUniqueOrThrow({ where: { id: room.id } });
   expect(persistedMessages.map((message) => message.content)).toEqual(['first batch body', 'second batch body']);
   expect(persistedMessages.map((message) => message.roomSequence)).toEqual([1n, 2n]);
-  expect(updatedWrites.map((write) => write.status)).toEqual(['PERSISTED', 'PERSISTED']);
-  expect(updatedWrites.map((write) => write.persistedAt?.toISOString())).toEqual([
+  expect(persistedMessages.map((message) => message.status)).toEqual(['PERSISTED', 'PERSISTED']);
+  expect(persistedMessages.map((message) => message.persistedAt.toISOString())).toEqual([
     '2026-05-30T11:00:00.000Z',
     '2026-05-30T11:01:00.000Z',
   ]);
@@ -184,8 +171,9 @@ test('message write worker persists a batch of commands and drains outbox fanout
   await drainMessageOutbox(prisma, { publisher: redis });
 
   expect(published).toHaveLength(2);
-  const fanoutedWrites = await prisma.messageWrite.findMany({ orderBy: { id: 'asc' } });
-  expect(fanoutedWrites.map((write) => write.status)).toEqual(['FANOUTED', 'FANOUTED']);
+  const fanoutedMessages = await prisma.message.findMany({ orderBy: { id: 'asc' } });
+  expect(fanoutedMessages.map((message) => message.status)).toEqual(['FANOUTED', 'FANOUTED']);
+  expect(fanoutedMessages.every((message) => message.fanoutedAt)).toBe(true);
   const outboxRows = await prisma.$queryRaw<Array<{ status: string }>>`
     SELECT "status"::text AS "status" FROM "MessageOutbox" ORDER BY "messageId"
   `;
@@ -224,7 +212,6 @@ test('message write worker deduplicates identical commands within the same batch
   // Assert
   expect(messages).toHaveLength(1);
   expect(await prisma.message.count()).toBe(1);
-  expect(await prisma.messageWrite.count()).toBe(1);
   expect(await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::BIGINT AS count FROM "MessageOutbox"`).toEqual([
     { count: 1n },
   ]);
@@ -246,17 +233,6 @@ test('message write worker does not publish again when redelivery finds an exist
     data: {
       isGroup: false,
       members: { create: [{ userId: alice.id }] },
-      messageWrites: {
-        create: {
-          id: 'msg-redelivery',
-          requestId: 'req-redelivery',
-          senderId: alice.id,
-          content: 'redelivery body',
-          acceptedAt,
-          persistedAt: acceptedAt,
-          status: 'PERSISTED',
-        },
-      },
       messages: {
         create: {
           id: 'msg-redelivery',
@@ -284,7 +260,6 @@ test('message write worker does not publish again when redelivery finds an exist
   // Assert
   expect(messages).toHaveLength(0);
   expect(await prisma.message.count()).toBe(1);
-  expect(await prisma.messageWrite.count()).toBe(1);
   expect(published).toHaveLength(0);
 });
 
@@ -334,11 +309,12 @@ test('message outbox retry keeps persisted writes until fanout succeeds', async 
   await drainMessageOutbox(prisma, { publisher: failingRedis });
 
   // Assert
-  const persistedWrite = await prisma.messageWrite.findUniqueOrThrow({ where: { id: 'msg-outbox-retry' } });
+  const persistedMessage = await prisma.message.findUniqueOrThrow({ where: { id: 'msg-outbox-retry' } });
   const failedOutbox = await prisma.$queryRaw<Array<{ status: string; failureReason: string | null }>>`
     SELECT "status"::text AS "status", "failureReason" FROM "MessageOutbox" WHERE "messageId" = 'msg-outbox-retry'
   `;
-  expect(persistedWrite.status).toBe('PERSISTED');
+  expect(persistedMessage.status).toBe('FANOUT_FAILED');
+  expect(persistedMessage.failureReason).toBe('redis unavailable');
   expect(failedOutbox).toEqual([expect.objectContaining({ status: 'FAILED', failureReason: 'redis unavailable' })]);
 
   await prisma.$executeRaw`
@@ -348,11 +324,12 @@ test('message outbox retry keeps persisted writes until fanout succeeds', async 
   `;
   await drainMessageOutbox(prisma, { publisher: redis });
 
-  const fanoutedWrite = await prisma.messageWrite.findUniqueOrThrow({ where: { id: 'msg-outbox-retry' } });
+  const fanoutedMessage = await prisma.message.findUniqueOrThrow({ where: { id: 'msg-outbox-retry' } });
   const publishedOutbox = await prisma.$queryRaw<Array<{ status: string }>>`
     SELECT "status"::text AS "status" FROM "MessageOutbox" WHERE "messageId" = 'msg-outbox-retry'
   `;
-  expect(fanoutedWrite.status).toBe('FANOUTED');
+  expect(fanoutedMessage.status).toBe('FANOUTED');
+  expect(fanoutedMessage.failureReason).toBeNull();
   expect(publishedOutbox).toEqual([{ status: 'PUBLISHED' }]);
   expect(published).toHaveLength(1);
 });
@@ -463,60 +440,10 @@ test('message write worker handles concurrent duplicate commands without duplica
 
   // Assert
   expect(await prisma.message.count()).toBe(1);
-  expect(await prisma.messageWrite.count()).toBe(1);
   expect(await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::BIGINT AS count FROM "MessageOutbox"`).toEqual([
     { count: 1n },
   ]);
   expect(published).toHaveLength(1);
-});
-
-test('message write worker does not rewrite a dead write as persisted', async () => {
-  // Arrange
-  const alice = await prisma.user.create({
-    data: {
-      username: 'alice',
-      email: 'alice@example.com',
-      displayName: 'Alice',
-      password: 'hashed-password',
-    },
-  });
-  const room = await prisma.room.create({
-    data: {
-      isGroup: false,
-      members: { create: [{ userId: alice.id }] },
-    },
-  });
-  await prisma.messageWrite.create({
-    data: {
-      id: 'msg-dead-terminal',
-      requestId: 'req-dead-terminal',
-      senderId: alice.id,
-      roomId: room.id,
-      content: 'dead terminal',
-      status: 'DEAD',
-      failedAt: new Date('2026-05-30T11:00:00.000Z'),
-      failureReason: 'terminal',
-    },
-  });
-
-  // Act
-  const messages = await processMessageWriteCommands(prisma, [{
-    message_id: 'msg-dead-terminal',
-    request_id: 'req-dead-terminal',
-    sender_id: alice.id,
-    room_id: room.id,
-    body: 'dead terminal',
-    accepted_at: '2026-05-30T11:00:00.000Z',
-  }]);
-
-  // Assert
-  const write = await prisma.messageWrite.findUniqueOrThrow({ where: { id: 'msg-dead-terminal' } });
-  expect(messages).toEqual([]);
-  expect(write.status).toBe('DEAD');
-  expect(await prisma.message.count()).toBe(0);
-  expect(await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::BIGINT AS count FROM "MessageOutbox"`).toEqual([
-    { count: 0n },
-  ]);
 });
 
 test('message write worker rejects conflicting duplicate commands without persisting the batch', async () => {
@@ -556,7 +483,6 @@ test('message write worker rejects conflicting duplicate commands without persis
     },
   ])).rejects.toThrow('batch contains conflicting message write commands');
   expect(await prisma.message.count()).toBe(0);
-  expect(await prisma.messageWrite.count()).toBe(0);
 });
 
 test('message write worker rejects an existing request conflict before persisting the Prisma batch', async () => {
@@ -575,14 +501,15 @@ test('message write worker rejects an existing request conflict before persistin
       members: { create: [{ userId: alice.id }] },
     },
   });
-  await prisma.messageWrite.create({
+  await prisma.message.create({
     data: {
       id: 'msg-existing-conflict',
       requestId: 'req-existing-conflict',
       senderId: alice.id,
       roomId: room.id,
       content: 'original body',
-      acceptedAt: new Date('2026-05-30T10:00:00.000Z'),
+      createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      roomSequence: 1,
     },
   });
 
@@ -606,5 +533,4 @@ test('message write worker rejects an existing request conflict before persistin
     },
   ])).rejects.toThrow('message write command does not match existing request');
   expect(await prisma.message.findUnique({ where: { id: 'msg-valid-in-rolled-back-batch' } })).toBeNull();
-  expect(await prisma.messageWrite.findUnique({ where: { id: 'msg-valid-in-rolled-back-batch' } })).toBeNull();
 });

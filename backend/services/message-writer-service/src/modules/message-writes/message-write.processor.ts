@@ -68,7 +68,6 @@ export async function processMessageWriteCommand(
     return message;
   } catch (err) {
     if (deliveryAttempt >= maxDeliveryAttempts) {
-      await markMessageWriteCommandDead(prisma, command, err);
       return undefined;
     }
 
@@ -96,61 +95,47 @@ export async function processMessageWriteCommands(
       FOR UPDATE
     `;
 
-    await tx.$executeRaw`
-      WITH input AS (${messageWriteInputSql(batchJson)})
-      INSERT INTO "MessageWrite" (
-        "id",
-        "requestId",
-        "senderId",
-        "roomId",
-        "content",
-        "acceptedAt"
-      )
-      SELECT
-        input."messageId",
-        input."requestId",
-        input."senderId",
-        input."roomId",
-        input."body",
-        input."acceptedAt"
-      FROM input
-      ON CONFLICT ("senderId", "requestId") DO NOTHING
-    `;
-
-    const writes = await tx.$queryRaw<Array<{
+    const existingMessages = await tx.$queryRaw<Array<{
       id: string;
       requestId: string;
       senderId: string;
       roomId: string;
       content: string;
-      status: string;
-      acceptedAt: Date;
     }>>`
       WITH input AS (${messageWriteInputSql(batchJson)})
       SELECT
-        mw."id",
-        mw."requestId",
-        mw."senderId",
-        mw."roomId",
-        mw."content",
-        mw."status"::text AS "status",
-        mw."acceptedAt"
-      FROM "MessageWrite" AS mw
+        m."id",
+        m."requestId",
+        m."senderId",
+        m."roomId",
+        m."content"
+      FROM "Message" AS m
       JOIN input
-        ON input."senderId" = mw."senderId"
-        AND input."requestId" = mw."requestId"
-      ORDER BY mw."senderId", mw."requestId"
-      FOR UPDATE OF mw
+        ON m."id" = input."messageId"
+        OR (
+          input."senderId" = m."senderId"
+          AND input."requestId" = m."requestId"
+        )
+      ORDER BY m."senderId", m."requestId", m."id"
+      FOR UPDATE OF m
     `;
-    const writesByKey = new Map(writes.map((write) => [messageWriteKey(write.senderId, write.requestId), write]));
+    const messagesByKey = new Map(
+      existingMessages.map((message) => [messageWriteKey(message.senderId, message.requestId), message]),
+    );
+    const messagesById = new Map(existingMessages.map((message) => [message.id, message]));
 
     for (const command of deduped) {
-      const write = writesByKey.get(messageWriteKey(command.sender_id, command.request_id));
+      const existing = messagesByKey.get(messageWriteKey(command.sender_id, command.request_id))
+        ?? messagesById.get(command.message_id);
       if (
-        !write ||
-        write.id !== command.message_id ||
-        write.roomId !== command.room_id ||
-        write.content !== command.body
+        existing &&
+        (
+          existing.id !== command.message_id ||
+          existing.requestId !== command.request_id ||
+          existing.senderId !== command.sender_id ||
+          existing.roomId !== command.room_id ||
+          existing.content !== command.body
+        )
       ) {
         throw new Error('message write command does not match existing request');
       }
@@ -158,41 +143,24 @@ export async function processMessageWriteCommands(
 
     const persistedMessages = await tx.$queryRaw<BatchPersistedMessageRow[]>`
       WITH input AS (${messageWriteInputSql(batchJson)}),
-      write_rows AS (
-        SELECT
-          mw."id",
-          mw."requestId",
-          mw."senderId",
-          mw."roomId",
-          mw."content",
-          mw."status",
-          mw."acceptedAt",
-          input."originConnectionId"
-        FROM "MessageWrite" AS mw
-        JOIN input
-          ON input."senderId" = mw."senderId"
-          AND input."requestId" = mw."requestId"
-      ),
       candidates AS (
         SELECT
-          write_rows.*,
+          input.*,
           ROW_NUMBER() OVER (
-            PARTITION BY write_rows."roomId"
-            ORDER BY write_rows."acceptedAt", write_rows."id"
+            PARTITION BY input."roomId"
+            ORDER BY input."acceptedAt", input."messageId"
           ) - 1 AS "roomOffset"
-        FROM write_rows
-        WHERE
-          write_rows."status" <> 'DEAD'::"MessageWriteStatus"
-          AND NOT EXISTS (
-            SELECT 1
-            FROM "Message" AS m
-            WHERE
-              m."id" = write_rows."id"
-              OR (
-                m."senderId" = write_rows."senderId"
-                AND m."requestId" = write_rows."requestId"
-              )
-          )
+        FROM input
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM "Message" AS m
+          WHERE
+            m."id" = input."messageId"
+            OR (
+              m."senderId" = input."senderId"
+              AND m."requestId" = input."requestId"
+            )
+        )
       ),
       room_counts AS (
         SELECT "roomId", COUNT(*)::BIGINT AS "messageCount"
@@ -213,14 +181,16 @@ export async function processMessageWriteCommands(
           "id",
           "content",
           "createdAt",
+          "persistedAt",
           "requestId",
           "roomSequence",
           "senderId",
           "roomId"
         )
         SELECT
-          candidates."id",
-          candidates."content",
+          candidates."messageId",
+          candidates."body",
+          candidates."acceptedAt",
           candidates."acceptedAt",
           candidates."requestId",
           room_allocations."startSequence" + candidates."roomOffset",
@@ -242,53 +212,10 @@ export async function processMessageWriteCommands(
           'outbox_' || md5('message.created:' || inserted_messages."id"),
           'message.created',
           inserted_messages."id",
-          write_rows."originConnectionId"
+          candidates."originConnectionId"
         FROM inserted_messages
-        JOIN write_rows ON write_rows."id" = inserted_messages."id"
+        JOIN candidates ON candidates."messageId" = inserted_messages."id"
         ON CONFLICT ("eventType", "messageId") DO NOTHING
-      ),
-      all_messages AS (
-        SELECT
-          inserted_messages."id",
-          inserted_messages."content",
-          inserted_messages."createdAt",
-          inserted_messages."senderId",
-          inserted_messages."roomId",
-          inserted_messages."requestId"
-        FROM inserted_messages
-        UNION
-        SELECT
-          m."id",
-          m."content",
-          m."createdAt",
-          m."senderId",
-          m."roomId",
-          m."requestId"
-        FROM "Message" AS m
-        JOIN write_rows
-          ON m."id" = write_rows."id"
-          OR (
-            m."senderId" = write_rows."senderId"
-            AND m."requestId" = write_rows."requestId"
-          )
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM inserted_messages
-          WHERE inserted_messages."id" = m."id"
-        )
-      ),
-      write_updates AS (
-        UPDATE "MessageWrite" AS mw
-        SET
-          "status" = 'PERSISTED'::"MessageWriteStatus",
-          "persistedAt" = all_messages."createdAt",
-          "failedAt" = NULL,
-          "failureReason" = NULL
-        FROM all_messages
-        WHERE
-          mw."senderId" = all_messages."senderId"
-          AND mw."requestId" = all_messages."requestId"
-          AND mw."status" NOT IN ('DEAD'::"MessageWriteStatus", 'FANOUTED'::"MessageWriteStatus")
       )
       SELECT
         inserted_messages."id",
@@ -296,9 +223,9 @@ export async function processMessageWriteCommands(
         inserted_messages."createdAt",
         inserted_messages."senderId",
         inserted_messages."roomId",
-        write_rows."originConnectionId"
+        candidates."originConnectionId"
       FROM inserted_messages
-      JOIN write_rows ON write_rows."id" = inserted_messages."id"
+      JOIN candidates ON candidates."messageId" = inserted_messages."id"
       ORDER BY inserted_messages."createdAt", inserted_messages."id"
     `;
 
@@ -387,14 +314,15 @@ export async function drainMessageOutbox(
           WHERE "id" = ${row.id}
         `,
         prisma.$executeRaw`
-          UPDATE "MessageWrite"
+          UPDATE "Message"
           SET
-            "status" = 'FANOUTED'::"MessageWriteStatus",
+            "status" = 'FANOUTED'::"MessageStatus",
+            "fanoutedAt" = CURRENT_TIMESTAMP,
             "failedAt" = NULL,
             "failureReason" = NULL
           WHERE
             "id" = ${row.messageId}
-            AND "status" = 'PERSISTED'::"MessageWriteStatus"
+            AND "status" IN ('PERSISTED'::"MessageStatus", 'FANOUT_FAILED'::"MessageStatus")
         `,
       ]);
       published += 1;
@@ -446,16 +374,27 @@ async function markOutboxFailed(
   err: unknown,
 ): Promise<void> {
   const retryDelayMs = Math.min(60_000, Math.max(1_000, row.attempts * row.attempts * 1_000));
-  await prisma.$executeRaw`
-    UPDATE "MessageOutbox"
-    SET
-      "status" = 'FAILED'::"MessageOutboxStatus",
-      "nextAttemptAt" = ${new Date(Date.now() + retryDelayMs)},
-      "lockedAt" = NULL,
-      "failureReason" = ${formatFailureReason(err)},
-      "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "id" = ${row.id}
-  `;
+  const failureReason = formatFailureReason(err);
+  await prisma.$transaction([
+    prisma.$executeRaw`
+      UPDATE "MessageOutbox"
+      SET
+        "status" = 'FAILED'::"MessageOutboxStatus",
+        "nextAttemptAt" = ${new Date(Date.now() + retryDelayMs)},
+        "lockedAt" = NULL,
+        "failureReason" = ${failureReason},
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = ${row.id}
+    `,
+    prisma.$executeRaw`
+      UPDATE "Message"
+      SET
+        "status" = 'FANOUT_FAILED'::"MessageStatus",
+        "failedAt" = CURRENT_TIMESTAMP,
+        "failureReason" = ${failureReason}
+      WHERE "id" = ${row.messageId}
+    `,
+  ]);
 }
 
 async function updateRoomsLastMessageAt(
@@ -494,60 +433,6 @@ async function updateRoomsLastMessageAt(
 function formatFailureReason(err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   return reason.slice(0, 2000);
-}
-
-async function markMessageWriteDead(
-  prisma: PrismaClient,
-  messageWriteId: string,
-  err: unknown,
-): Promise<void> {
-  try {
-    await prisma.$executeRaw`
-      UPDATE "MessageWrite"
-      SET
-        "status" = 'DEAD'::"MessageWriteStatus",
-        "failedAt" = CURRENT_TIMESTAMP,
-        "failureReason" = ${formatFailureReason(err)}
-      WHERE
-        "id" = ${messageWriteId}
-        AND "status" = 'PENDING'::"MessageWriteStatus"
-    `;
-  } catch (markErr) {
-    console.error('failed to mark message write dead:', markErr);
-  }
-}
-
-async function markMessageWriteCommandDead(
-  prisma: PrismaClient,
-  command: MessageWriteCommand,
-  err: unknown,
-): Promise<void> {
-  try {
-    const existing = await prisma.messageWrite.findUnique({
-      where: { senderId_requestId: { senderId: command.sender_id, requestId: command.request_id } },
-      select: { id: true },
-    });
-    if (existing) {
-      await markMessageWriteDead(prisma, existing.id, err);
-      return;
-    }
-
-    await prisma.messageWrite.create({
-      data: {
-        id: command.message_id,
-        requestId: command.request_id,
-        senderId: command.sender_id,
-        roomId: command.room_id,
-        content: command.body,
-        acceptedAt: new Date(command.accepted_at),
-        status: 'DEAD',
-        failedAt: new Date(),
-        failureReason: formatFailureReason(err),
-      },
-    });
-  } catch (markErr) {
-    console.error('failed to mark message write command dead:', markErr);
-  }
 }
 
 function dedupeMessageWriteCommands(commands: MessageWriteCommand[]): MessageWriteCommand[] {

@@ -23,13 +23,10 @@ import {
   findMessageByRequestId,
   findMessageCursor,
   findMessages,
-  findPendingMessageWrites,
-  findPendingMessageWritesForRooms,
   findRoomForUser,
   findRoomMembersForUser,
   findRoomMembership,
   findUserForChatMember,
-  findWriteCursor,
   updateLastMessageAt,
 } from './chats.repository.js';
 
@@ -132,39 +129,9 @@ function toChatDto(room: {
   };
 }
 
-function newestMessage(left: Message | undefined, right: Message | undefined): Message | undefined {
-  if (!left) return right;
-  if (!right) return left;
-  return new Date(left.created_at).getTime() >= new Date(right.created_at).getTime() ? left : right;
-}
-
-async function attachPendingLatestMessages(
-  prisma: PrismaClient,
-  chats: Chat[],
-): Promise<Chat[]> {
-  const pendingWrites = await findPendingMessageWritesForRooms(prisma, chats.map((chat) => chat.id));
-  const pendingByRoom = new Map<string, Message>();
-
-  for (const write of pendingWrites) {
-    if (pendingByRoom.has(write.roomId)) continue;
-    pendingByRoom.set(write.roomId, toPendingMessageDto(write));
-  }
-
-  return chats
-    .map((chat) => ({
-      ...chat,
-      last_message: newestMessage(chat.last_message, pendingByRoom.get(chat.id)),
-    }))
-    .sort((a, b) => {
-      const aTime = a.last_message ? new Date(a.last_message.created_at).getTime() : new Date(a.created_at).getTime();
-      const bTime = b.last_message ? new Date(b.last_message.created_at).getTime() : new Date(b.created_at).getTime();
-      return bTime - aTime;
-    });
-}
-
 export async function listChats(prisma: PrismaClient, userId: string): Promise<Chat[]> {
   const memberships = await findMembershipsForUser(prisma, userId);
-  return attachPendingLatestMessages(prisma, memberships.map((membership) => toChatDto(membership.room, userId)));
+  return memberships.map((membership) => toChatDto(membership.room, userId));
 }
 
 export async function createChat(
@@ -256,8 +223,7 @@ export async function createChat(
 export async function getChat(prisma: PrismaClient, userId: string, chatId: string): Promise<Chat> {
   const room = await findRoomForUser(prisma, { userId, roomId: chatId });
   if (!room) throw new AppError(404, 'NOT_FOUND', 'Chat not found');
-  const [chat] = await attachPendingLatestMessages(prisma, [toChatDto(room, userId)]);
-  return chat;
+  return toChatDto(room, userId);
 }
 
 export async function getChatMembers(prisma: PrismaClient, userId: string, chatId: string): Promise<User[]> {
@@ -277,33 +243,17 @@ export async function getMessages(
 
   let cursorCreatedAt: Date | undefined;
   if (input.beforeMessageId && typeof input.beforeMessageId === 'string') {
-    const cursorMsg = await findMessageCursor(prisma, input.beforeMessageId)
-      ?? await findWriteCursor(prisma, input.beforeMessageId);
+    const cursorMsg = await findMessageCursor(prisma, input.beforeMessageId);
     if (cursorMsg) cursorCreatedAt = cursorMsg.createdAt;
   }
 
-  const [messages, pendingWrites] = await Promise.all([
-    findMessages(prisma, {
-      roomId: input.chatId,
-      before: cursorCreatedAt,
-      limit: pageSize,
-    }),
-    findPendingMessageWrites(prisma, {
-      roomId: input.chatId,
-      before: cursorCreatedAt,
-      limit: pageSize,
-    }),
-  ]);
+  const messages = await findMessages(prisma, {
+    roomId: input.chatId,
+    before: cursorCreatedAt,
+    limit: pageSize,
+  });
 
-  const merged = new Map<string, Message>();
-  for (const message of messages) merged.set(message.id, toMessageDto(message));
-  for (const write of pendingWrites) {
-    if (!merged.has(write.id)) merged.set(write.id, toPendingMessageDto(write));
-  }
-
-  return [...merged.values()]
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, pageSize);
+  return messages.map(toMessageDto);
 }
 
 export async function createMessage(
