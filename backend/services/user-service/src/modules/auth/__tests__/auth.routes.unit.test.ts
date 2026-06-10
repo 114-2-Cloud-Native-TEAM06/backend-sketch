@@ -513,7 +513,7 @@ test('refresh rejects missing bearer token', async () => {
 
 test('refresh rejects tampered bearer tokens', async () => {
   // Arrange
-  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret'); // NOSONAR test fixture: deliberately-wrong secret in a negative auth test, not a production credential
   const prisma = {
     user: {
       findUnique: async () => {

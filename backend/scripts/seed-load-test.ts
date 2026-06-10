@@ -23,7 +23,7 @@ async function main(): Promise<void> {
         username,
         email: `${username}@example.com`,
         displayName: `Load User ${suffix}`,
-        password: 'load-test-password',
+        password: 'load-test-password', // NOSONAR seed-script test account password, not a production secret
       },
     });
     return {
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
           username,
           email: `${username}@example.com`,
           displayName: `Load Partner ${suffix}`,
-          password: 'load-test-password',
+          password: 'load-test-password', // NOSONAR seed-script test account password, not a production secret
         },
       });
     }));
