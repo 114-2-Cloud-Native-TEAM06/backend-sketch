@@ -13,6 +13,7 @@ export async function requestJson<T = unknown>(
   init: RequestInit = {},
 ): Promise<TestResponse<T>> {
   const app = express();
+  app.disable('x-powered-by'); // mirror production: don't leak framework/version info
   app.use(express.json());
   app.use(router);
   app.use(errorMiddleware);
