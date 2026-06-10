@@ -33,7 +33,7 @@ test('auth middleware rejects missing bearer token', async () => {
 
 test('auth middleware rejects tampered jwt tokens', async () => {
   // Arrange
-  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+  const token = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret'); // NOSONAR test fixture: deliberately-wrong secret in a negative auth test, not a production credential
 
   // Act
   const res = await requestJson(protectedRouter(), '/protected', {

@@ -136,7 +136,7 @@ test('websocket rejects missing token connections', async () => {
 test('websocket rejects tampered token connections', async () => {
   // Arrange
   const port = await startServer();
-  const badToken = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret');
+  const badToken = jwt.sign({ userId: 'user-1', username: 'alice' }, 'wrong-secret'); // NOSONAR test fixture: deliberately-wrong secret in a negative auth test, not a production credential
   const ws = connectWs(port, `token=${badToken}`);
 
   // Act
