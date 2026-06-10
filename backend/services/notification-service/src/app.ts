@@ -4,6 +4,7 @@ import { errorMiddleware } from '../../../packages/shared-errors/src/error-middl
 
 export function createNotificationServiceApp(): Express {
   const app: Express = express();
+  app.disable('x-powered-by'); // don't leak framework/version info
   app.use(express.json());
 
   app.get('/health', (_req, res) => {

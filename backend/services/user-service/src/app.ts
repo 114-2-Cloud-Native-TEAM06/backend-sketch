@@ -23,6 +23,7 @@ export function createUserServiceApp(
   deps: UserServiceDependencies = {},
 ): Express {
   const app: Express = express();
+  app.disable('x-powered-by'); // don't leak framework/version info
   app.use(express.json());
 
   app.get('/health', (_req, res) => {

@@ -59,7 +59,7 @@ test('creates a direct chat and stores room memberships in PostgreSQL', async ()
     where: { roomId: res.body.id },
     orderBy: { userId: 'asc' },
   });
-  expect(members.map((member) => member.userId).sort()).toEqual([alice.id, bob.id].sort());
+  expect(members.map((member) => member.userId).sort((a, b) => a.localeCompare(b))).toEqual([alice.id, bob.id].sort((a, b) => a.localeCompare(b)));
 });
 
 test('creates a group chat and returns its members from PostgreSQL', async () => {
@@ -109,7 +109,7 @@ test('creates a group chat and returns its members from PostgreSQL', async () =>
   expect(createRes.status).toBe(201);
   expect(createRes.body).toMatchObject({ type: 'group', name: 'Study Group' });
   expect(membersRes.status).toBe(200);
-  expect(membersRes.body.map((user) => user.username).sort()).toEqual(['alice', 'bob', 'carol']);
+  expect(membersRes.body.map((user) => user.username).sort((a, b) => a.localeCompare(b))).toEqual(['alice', 'bob', 'carol']);
 });
 
 test('rejects unauthenticated direct chat creation and does not create a room', async () => {
